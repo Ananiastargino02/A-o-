@@ -2719,7 +2719,7 @@ String executarComandoApp(String cmd) {
     char b[200];
     snprintf(b, sizeof(b),
       "km=%lu bat=%.1fV rpm=%d temp=%d vel=%d comb=%d motor=%dh%02dm proto=%s/%dk estado=%s",
-      km, v, d.rpm > 0 ? d.rpm : 0, d.temp_motor, d.velocidade > 0 ? d.velocidade : 0,
+      km, v, d.rpm > 0 ? d.rpm : 0, d.temp_motor > -40 ? d.temp_motor : 0, d.velocidade > 0 ? d.velocidade : 0,
       d.combust >= 0 ? d.combust : 0, mh, mm,
       obd_extd ? "29b" : "11b", obd_baud,
       (estadoAtual == STANDBY) ? "STANDBY" : "OPERANDO");
