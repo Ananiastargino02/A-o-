@@ -194,7 +194,7 @@ const TX ='6e400003-b5a3-f393-e0a9-e50e24dcca9e';
 let NOMES = ['Oleo Motor','Filtro Ar','Vela','Oleo Cambio','Correia'];
 
 let device, rxChar, txChar, lastDeviceKm = 0;
-let rxAcc='', rxTimer=null;
+let rxAcc='', rxTimer=null, pollTimer=null;
 
 const $ = id => document.getElementById(id);
 function log(t){ const l=$('log'); l.textContent += t+'\n'; l.scrollTop=l.scrollHeight; }
@@ -281,19 +281,27 @@ $('btnConn').addEventListener('click', async ()=>{
 function onConnect(){
   setStatus(true, device.name||'VEICAN');
   $('btnConn').classList.add('hide'); $('painel').classList.remove('hide');
-  log('conectado.'); send('STATUS'); setTimeout(()=>send('MANUT LIST'),500);
+  log('conectado.');
+  send('STATUS'); setTimeout(()=>send('MANUT LIST'),700);
+  // leitura AO VIVO: pede STATUS a cada 1,5s (RPM/temp/etc. atualizam sozinhos)
+  clearInterval(pollTimer);
+  pollTimer = setInterval(()=>{
+    if(device && device.gatt && device.gatt.connected) send('STATUS', true);
+    else { clearInterval(pollTimer); pollTimer=null; }
+  }, 1500);
 }
 function onDisconnect(){
+  clearInterval(pollTimer); pollTimer=null;
   setStatus(false,'desconectado');
   $('btnConn').classList.remove('hide'); $('painel').classList.add('hide'); log('desconectado.');
 }
 
-async function send(cmd){
-  if(!rxChar){ log('nao conectado'); return; }
-  log('-> '+cmd);
+async function send(cmd, quiet){
+  if(!rxChar){ if(!quiet) log('nao conectado'); return; }
+  if(!quiet) log('-> '+cmd);
   const data=new TextEncoder().encode(cmd);
   try{ await rxChar.writeValue(data); }
-  catch(e){ try{ await rxChar.writeValueWithoutResponse(data); }catch(e2){ log('ERRO envio: '+e2.message); } }
+  catch(e){ try{ await rxChar.writeValueWithoutResponse(data); }catch(e2){ if(!quiet) log('ERRO envio: '+e2.message); } }
 }
 
 function onNotify(e){
@@ -302,9 +310,9 @@ function onNotify(e){
   rxTimer=setTimeout(()=>{ const r=rxAcc; rxAcc=''; processar(r); }, 150);
 }
 function processar(resp){
+  if(/km=/.test(resp)){ parseStatus(resp); return; }   // STATUS ao vivo: nao polui o console
   log('<- '+resp);
-  if(/km=/.test(resp)) parseStatus(resp);
-  else if(/^DTC\s/.test(resp.trim())) parseDTC(resp);
+  if(/^DTC\s/.test(resp.trim())) parseDTC(resp);
   else if(/^\d+:.*%/m.test(resp)) parseManut(resp);
 }
 
