@@ -1,0 +1,3122 @@
+// ============================================================
+//  MOTOR GUARD v6.0 - Painel cockpit
+//  - Velocidade CENTRALIZADA com barra que sobe, faz uma curva
+//    leve no topo e segue reta (nao e arco, e curva suave).
+//  - RPM como barra digital com marcas + redline.
+//  - Embaixo: BATERIA, ALTERNADOR, TEMPERATURA, COMBUSTIVEL.
+//  - Tudo com dado REAL (os mesmos da taskCAN). Pinos/CAN/EEPROM/
+//    RTC/DTC/sleep/tarefas: IDENTICOS ao v5.2.
+//
+//  CORRECOES NESTA REVISAO:
+//  1. Calibração ADC: Ajuste fino do divisor (39k/10k) e voltcal
+//  2. Navegação: Modo "visualização" (apenas passar páginas) vs "edição" (dentro da página)
+//  3. Página Diagnóstico: Agora consegue navegar para próxima página
+//  4. Página Manutenção: Entra apenas com MENU; navega com ANT/PRX; reset com MENU longpress
+//  5. Alertas: Apenas mostra se item REALMENTE vencido (>= 100%)
+//  6. Hodômetro: Conta APENAS quando velocidade > 0 (não baseado em RPM)
+//  7. Fundo: Padrão visual moderno em vez de preto puro
+//
+//  CORRECOES v6.3 (esta revisao):
+//  A. Manutencao nao mostra mais "VENC." falso depois do ZERAR TUDO
+//     (protege underflow quando km_atual < km_ultima).
+//  B. Temperatura nao mostra mais -1C em leitura falha (sentinela de
+//     erro do lerPID_int passou de -1 para -1000, fora da faixa valida).
+//  C. Alerta de SOBRECARGA do alternador: passa a disparar com tensao
+//     ACIMA de 14.5V (era 15.0V) sustentada por mais de 3s (era 4s).
+//  D. CAN nao "para de ler" no carro: com o motor ligado, falha de
+//     leitura e tratada como congestionamento do barramento e a ultima
+//     leitura e mantida (so zera RPM/vel quando a tensao confirma que o
+//     alternador parou). Tambem 1 retry rapido no RPM.
+//
+//  ATENCAO: aparelho consome bateria do carro mesmo desligado!
+// ============================================================
+
+#define LGFX_USE_V1
+#include <LovyanGFX.hpp>
+#include <lvgl.h>
+#include <SPI.h>
+#include <Wire.h>
+#include <RTClib.h>
+#include "driver/twai.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
+#include "esp_sleep.h"
+#include "esp_system.h"
+#include "driver/rtc_io.h"
+#include "rom/rtc.h"
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
+
+// (fontes agora sao do LVGL: montserrat 14/28/40)
+
+// ============================================================
+//  Pinos
+// ============================================================
+#define TFT_CS     5
+#define TFT_DC     2
+#define TFT_RST    4
+#define CAN_TX_PIN GPIO_NUM_26
+#define CAN_RX_PIN GPIO_NUM_27
+#define VW_CLUSTER_REQ 0x714
+#define VW_DID_FUEL    0x2206
+#define VW_DID_RANGE   0x2297
+#define TANQUE_VW_L    60
+#define BTN_ANT    13
+#define BTN_MENU   14
+#define BTN_PRX    19
+#define DEBOUNCE_MS 50
+
+// ===== ADC tensao da bateria (independente do CAN) =====
+#define PIN_VBAT    36                               // SENSOR_VP / ADC1_CH0
+#define VBAT_RATIO  ((39000.0 + 10000.0) / 10000.0)  // divisor 39k/10k -> 4.9
+
+// ============================================================
+//  EEPROM Layout
+// ============================================================
+#define EEPROM_ADDR      0x57
+#define HEADER_SIZE      16
+#define RECORD_SIZE      16
+#define MAX_RECORDS      176   // era 180; liberou 64 bytes p/ config + hodometro duplo
+#define LOGS_BASE        HEADER_SIZE
+#define LOGS_END         (LOGS_BASE + MAX_RECORDS*RECORD_SIZE)   // = 2832
+#define CONFIG_ADDR      2832  // calibracoes persistentes (voltcal, km_cal)
+#define ODO_SLOT_A       2848  // hodometro slot A (gravacao alternada anti-corrupcao)
+#define ODO_SLOT_B       2872  // hodometro slot B
+#define HODOMETRO_ADDR   2896  // LEGADO: so leitura p/ migrar dados antigos
+#define HODOMETRO_SIZE   16
+#define MANUTENCAO_ADDR  2912
+#define MANUTENCAO_SIZE  160
+#define ITEM_SIZE        32
+#define DEBUG_LOG_ADDR   3072
+#define DEBUG_LOG_SIZE   1024
+#define DEBUG_HEADER_SIZE 16
+#define DEBUG_RECORD_SIZE 32
+#define MAX_DEBUG_RECORDS ((DEBUG_LOG_SIZE - DEBUG_HEADER_SIZE) / DEBUG_RECORD_SIZE)
+
+// ============================================================
+//  Sleep
+// ============================================================
+#define RPM_LIMIAR_SLEEP   200
+#define TEMPO_PRA_SLEEP_MS (2 * 60 * 1000)
+#define WAKE_INTERVAL_S    60
+// ===== STANDBY =====
+#define TENSAO_WAKE          13.0   // V: acima disso = alternador carregando (motor ligado)
+#define TEMPO_STANDBY_MS     40000UL // tensao baixa por 40s -> entra em standby
+#define CONFIRMA_CAN_MS      3000   // ao acordar, espera atividade CAN por ate 3s
+
+// ============================================================
+//  Manutencao
+// ============================================================
+#define NUM_ITENS_MANUT  5
+#define IDX_OLEO_MOTOR   0
+#define IDX_FILTRO_AR    1
+#define IDX_VELA         2
+#define IDX_OLEO_CAMBIO  3
+#define IDX_CORREIA      4
+#define VELA_NORMAL_KM   40000
+#define VELA_IRIDIO_KM   60000
+#define LONGPRESS_MS     4000
+
+// ============================================================
+//  Navegacao (NOVO: modo visualizacao vs edicao)
+// ============================================================
+#define NAV_MODO_VISUALIZACAO 0
+#define NAV_MODO_EDICAO       1
+
+// ============================================================
+//  Globais
+// ============================================================
+RTC_DS3231 rtc;
+bool rtc_ok = false;            // RTC presente (definido uma vez no setup)
+bool hora_nao_ajustada = false; // RTC perdeu energia: hora precisa ser acertada pelo usuario
+
+float voltcal = 1.0;   // trim fino da leitura ADC (comando VOLTCAL — agora persiste na EEPROM)
+// calibracao de hodometro por carro (comando KMCAL <km_real> <km_mostrado> — persiste na EEPROM).
+// Padrao de fabrica 1.0 (velocidade OBD crua). Ex: Tiguan calibrado deu 1.0833 (52/48).
+float km_cal = 1.0;
+
+struct DadosCarro {
+  int rpm, velocidade, temp_motor, tps, ped_abs;
+  int combust, carga, carga_abs, temp_adm;
+  int warmups, dist_dtc;
+  float tensao;
+};
+
+DadosCarro dados_publicos;
+SemaphoreHandle_t mutex_dados, mutex_hora, mutex_hodometro, mutex_manut, mutex_debug, mutex_i2c;
+
+bool pid_suportado[256] = {false};
+volatile uint32_t tx_ok = 0, rx_ok = 0, timeouts = 0;
+volatile uint8_t hora_h = 0, hora_m = 0, hora_s = 0;
+volatile uint8_t data_dia = 1, data_mes = 1;
+volatile uint16_t data_ano = 2026;
+
+volatile uint16_t log_head = 0;
+volatile uint16_t log_count = 0;
+volatile uint32_t log_total = 0;
+
+volatile uint8_t pagina_atual = 0;
+volatile uint8_t pagina_anterior = 255;
+volatile bool entrou_pagina = false;  // true no 1o frame apos trocar de pagina (forca redesenho)
+const uint8_t TOTAL_PAGINAS = 5;  // NOVO: +1 para página de ajuste de hora/data
+
+// ===== NOVO: Estados da página de ajuste de hora/data =====
+#define AJUSTE_ESTADO_MENU    0
+#define AJUSTE_ESTADO_DIA     1
+#define AJUSTE_ESTADO_MES     2
+#define AJUSTE_ESTADO_ANO     3
+#define AJUSTE_ESTADO_HORA    4
+#define AJUSTE_ESTADO_MIN     5
+#define AJUSTE_ESTADO_SEG     6
+#define AJUSTE_ESTADO_SALVAR  7
+
+volatile uint8_t ajuste_estado = AJUSTE_ESTADO_MENU;
+volatile uint8_t ajuste_dia = 1, ajuste_mes = 1, ajuste_ano = 26;  // ajuste_ano = ano - 2000 (cabe em uint8_t)
+volatile uint8_t ajuste_hora = 0, ajuste_min = 0, ajuste_seg = 0;
+
+// NOVO: modo de navegacao (visualizacao vs edicao)
+volatile uint8_t nav_modo = NAV_MODO_VISUALIZACAO;
+
+// NOVO: flag para entrar em ajuste de hora/data
+volatile bool entrar_ajuste_hora = false;
+
+volatile uint32_t km_total_x100 = 0;
+volatile uint32_t segundos_motor_total = 0;
+volatile uint32_t km_acumulado_x100 = 0;
+volatile bool sistema_confirma_zerar = false;       // janela ZERAR TUDO?
+volatile uint8_t sistema_confirma_selecionado = 1;  // 0=SIM, 1=NAO
+
+volatile uint32_t inicio_rpm_baixo = 0;
+volatile bool contando_pra_sleep = false;
+volatile bool forcar_sleep = false;
+
+// ===== STANDBY =====
+enum EstadoEnergia { OPERANDO, STANDBY };
+volatile EstadoEnergia estadoAtual = OPERANDO;
+volatile bool pedido_acordar = false;   // setado pela taskBotoes quando MENU e apertado em standby
+volatile uint32_t hb_tela = 0, hb_botoes = 0;  // "batimentos" p/ watchdog de software
+
+volatile bool alerta_bateria_ativo = false;
+volatile bool alerta_alternador_ativo = false;
+
+volatile uint8_t item_manut_selecionado = 0;
+volatile bool vela_iridio = false;
+
+// ===== Diagnostico DTCs =====
+#define DIAG_ESTADO_MENU       0
+#define DIAG_ESTADO_LENDO      1
+#define DIAG_ESTADO_RESULTADO  2
+#define DIAG_ESTADO_CONFIRMAR  3
+#define DIAG_ESTADO_APAGANDO   4
+#define DIAG_ESTADO_APAGADO_OK 5
+#define MAX_DTCS 12
+
+volatile uint8_t diag_estado = DIAG_ESTADO_MENU;
+volatile uint8_t diag_menu_selecionado = 0;
+volatile uint8_t diag_confirma_selecionado = 1;
+volatile uint8_t diag_num_dtcs = 0;
+volatile uint32_t diag_ultima_leitura = 0;
+
+// confirmacao de reset de manutencao (janela SIM/NAO)
+volatile bool manut_confirma_reset = false;
+volatile uint8_t manut_confirma_selecionado = 1;  // 0=SIM, 1=NAO (padrao NAO)
+char diag_dtcs[MAX_DTCS][6];
+volatile bool diag_solicitar_leitura = false;
+volatile bool diag_solicitar_apagar = false;
+
+volatile bool     probe_pedir_fuel = false;
+volatile bool     probe_pedir_m22  = false;
+volatile uint16_t probe_did_ini    = 0;
+volatile uint16_t probe_did_fim    = 0;
+volatile uint32_t probe_reqid      = 0x7E0;
+volatile uint8_t  fuel_metodo = 0;
+
+volatile uint16_t debug_log_head = 0;
+volatile uint16_t debug_log_count = 0;
+volatile uint32_t ultimo_heartbeat = 0;
+
+// ============================================================
+//  Estruturas
+// ============================================================
+struct LogRecord {
+  uint32_t timestamp;
+  uint8_t evento;
+  uint16_t rpm;
+  uint8_t velocidade;
+  int8_t temp_motor;
+  uint8_t tps;
+  uint8_t ped_abs;
+  uint8_t tensao_x10;
+  uint8_t carga;
+  uint8_t carga_abs;
+  uint8_t combust;
+  int8_t temp_adm;
+  uint8_t crc;
+} __attribute__((packed));
+
+struct EepromHeader {
+  char magic[4];
+  uint8_t versao;
+  uint16_t head;
+  uint16_t count;
+  uint32_t total;
+  uint8_t reservado[3];
+} __attribute__((packed));
+
+struct EepromHodometro {
+  char magic[4];
+  uint32_t km_total_x100;
+  uint32_t segundos_motor;
+  uint32_t reservado;
+} __attribute__((packed));
+
+// Hodometro com gravacao alternada (2 slots + sequencia + CRC):
+// se a energia cair no meio de uma gravacao, o outro slot continua integro.
+struct OdoSlot {
+  char magic[4];          // "ODO2"
+  uint32_t km_total_x100;
+  uint32_t segundos_motor;
+  uint32_t seq;           // numero de sequencia: o maior seq valido vence
+  uint8_t crc;            // soma dos 16 bytes anteriores
+  uint8_t pad[7];
+} __attribute__((packed)); // 24 bytes
+
+struct EepromConfig {
+  char magic[4];          // "CFG1"
+  float voltcal;
+  float km_cal;
+  uint8_t crc;            // soma dos 12 bytes anteriores
+  uint8_t pad[3];
+} __attribute__((packed)); // 16 bytes
+
+struct ItemManutencao {
+  char magic[2];
+  uint8_t tipo;
+  uint8_t flags;
+  uint32_t km_intervalo;
+  uint32_t dias_intervalo;
+  uint32_t km_ultima;
+  uint32_t timestamp_ultima;
+  uint8_t reservado[10];
+} __attribute__((packed));
+
+ItemManutencao itens_manut[NUM_ITENS_MANUT];
+
+const char* NOMES_ITENS[] = {
+  "Oleo Motor", "Filtro Ar", "Vela", "Oleo Cambio", "Correia"
+};
+
+// ============================================================
+//  ICONES 16x16
+// ============================================================
+const uint8_t ICONE_BATERIA[] PROGMEM = {
+  0b00011000, 0b00011000, 0b01111111, 0b11111110,
+  0b01000000, 0b00000010, 0b01000011, 0b00000010,
+  0b01000011, 0b00011110, 0b01001111, 0b00011110,
+  0b01001111, 0b00000010, 0b01000011, 0b00000010,
+  0b01000011, 0b00011110, 0b01001111, 0b00011110,
+  0b01001111, 0b00000010, 0b01000011, 0b00000010,
+  0b01000011, 0b00011110, 0b01000000, 0b00000010,
+  0b01111111, 0b11111110, 0b00000000, 0b00000000
+};
+const uint8_t ICONE_RAIO[] PROGMEM = {
+  0b00000000, 0b11100000, 0b00000001, 0b11000000,
+  0b00000011, 0b10000000, 0b00000111, 0b00000000,
+  0b00001110, 0b00000000, 0b00011100, 0b00000000,
+  0b00111111, 0b11110000, 0b01111111, 0b11100000,
+  0b00000011, 0b11000000, 0b00000111, 0b10000000,
+  0b00001111, 0b00000000, 0b00011110, 0b00000000,
+  0b00111100, 0b00000000, 0b01111000, 0b00000000,
+  0b11110000, 0b00000000, 0b00000000, 0b00000000
+};
+const uint8_t ICONE_TERMO[] PROGMEM = {
+  0b00000111, 0b00000000, 0b00001111, 0b10000000,
+  0b00001001, 0b10000000, 0b00001111, 0b10000000,
+  0b00001001, 0b10000000, 0b00001111, 0b10000000,
+  0b00001001, 0b10000000, 0b00001111, 0b10000000,
+  0b00001001, 0b10000000, 0b00001111, 0b10000000,
+  0b00011111, 0b11000000, 0b00111111, 0b11100000,
+  0b00111111, 0b11100000, 0b00111111, 0b11100000,
+  0b00011111, 0b11000000, 0b00001111, 0b10000000
+};
+const uint8_t ICONE_VEL[] PROGMEM = {
+  0b00000000, 0b00000000, 0b00000111, 0b11100000,
+  0b00011111, 0b11111000, 0b00111000, 0b00011100,
+  0b01110000, 0b00001110, 0b01100000, 0b00000110,
+  0b11000000, 0b00000011, 0b11000111, 0b00000011,
+  0b11000111, 0b00000011, 0b11000111, 0b00000011,
+  0b11000111, 0b11111011, 0b11000000, 0b00000011,
+  0b01100000, 0b00000110, 0b01110000, 0b00001110,
+  0b00111111, 0b11111100, 0b00011111, 0b11111000
+};
+const uint8_t ICONE_OLEO[] PROGMEM = {
+  0b00000001, 0b10000000, 0b00000001, 0b10000000,
+  0b00000011, 0b11000000, 0b00000011, 0b11000000,
+  0b00000111, 0b11100000, 0b00000111, 0b11100000,
+  0b00001111, 0b11110000, 0b00001111, 0b11110000,
+  0b00011111, 0b11111000, 0b00011111, 0b11111000,
+  0b00111111, 0b11111100, 0b00111111, 0b11111100,
+  0b00111111, 0b11111100, 0b00011111, 0b11111000,
+  0b00001111, 0b11110000, 0b00000111, 0b11100000
+};
+const uint8_t ICONE_FILTRO[] PROGMEM = {
+  0b00111111, 0b11111100, 0b01000000, 0b00000010,
+  0b10111111, 0b11111101, 0b10100000, 0b00000101,
+  0b10101111, 0b11110101, 0b10101000, 0b00010101,
+  0b10101011, 0b11010101, 0b10101010, 0b01010101,
+  0b10101010, 0b01010101, 0b10101011, 0b11010101,
+  0b10101000, 0b00010101, 0b10101111, 0b11110101,
+  0b10100000, 0b00000101, 0b10111111, 0b11111101,
+  0b01000000, 0b00000010, 0b00111111, 0b11111100
+};
+const uint8_t ICONE_VELA[] PROGMEM = {
+  0b00000111, 0b11100000, 0b00000111, 0b11100000,
+  0b00000110, 0b01100000, 0b00000111, 0b11100000,
+  0b00000110, 0b01100000, 0b00000111, 0b11100000,
+  0b00000100, 0b00100000, 0b00001111, 0b11110000,
+  0b00001111, 0b11110000, 0b00011111, 0b11111000,
+  0b00011111, 0b11111000, 0b00001111, 0b11110000,
+  0b00000111, 0b11100000, 0b00000011, 0b11000000,
+  0b00000001, 0b10000000, 0b00000001, 0b10000000
+};
+const uint8_t ICONE_CORREIA[] PROGMEM = {
+  0b00000000, 0b00000000, 0b00000111, 0b11100000,
+  0b00011111, 0b11111000, 0b00111100, 0b00111100,
+  0b01110000, 0b00001110, 0b01100000, 0b00000110,
+  0b11000111, 0b11100011, 0b11000111, 0b11100011,
+  0b11000111, 0b11100011, 0b11000111, 0b11100011,
+  0b01100000, 0b00000110, 0b01110000, 0b00001110,
+  0b00111100, 0b00111100, 0b00011111, 0b11111000,
+  0b00000111, 0b11100000, 0b00000000, 0b00000000
+};
+const uint8_t ICONE_ALERTA[] PROGMEM = {
+  0b00000001, 0b10000000, 0b00000011, 0b11000000,
+  0b00000011, 0b11000000, 0b00000111, 0b11100000,
+  0b00000111, 0b11100000, 0b00001110, 0b01110000,
+  0b00001110, 0b01110000, 0b00011100, 0b00111000,
+  0b00011100, 0b00111000, 0b00111000, 0b00011100,
+  0b00111000, 0b00011100, 0b01110001, 0b10001110,
+  0b01110001, 0b10001110, 0b11111111, 0b11111111,
+  0b11111111, 0b11111111, 0b00000000, 0b00000000
+};
+// ===== icones 32x32 do painel (1bpp) =====
+const uint8_t ICONE_OLEO32[] PROGMEM = {
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x06, 0x00, 0x00, 0x00,
+  0x0F, 0x00, 0x00, 0x00,
+  0x1F, 0x80, 0x00, 0x00,
+  0x3F, 0xC0, 0x00, 0x00,
+  0x1F, 0xE0, 0x00, 0x00,
+  0x17, 0xF0, 0x00, 0x00,
+  0x13, 0xF8, 0x00, 0x00,
+  0x39, 0xFC, 0x00, 0x00,
+  0x7C, 0xFE, 0x00, 0x00,
+  0x7C, 0x7F, 0x00, 0x00,
+  0x3C, 0x3F, 0xFF, 0x80,
+  0x10, 0x1F, 0xFF, 0xC0,
+  0x00, 0x3F, 0xFF, 0xE0,
+  0x00, 0x3F, 0xFF, 0xE0,
+  0x00, 0x3F, 0xFF, 0xE0,
+  0x00, 0x3F, 0xFF, 0xE0,
+  0x00, 0x3F, 0xFF, 0xE0,
+  0x00, 0x1F, 0xFF, 0xC0,
+  0x00, 0x0F, 0xFF, 0x80,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00
+};
+
+const uint8_t ICONE_FILTRO32[] PROGMEM = {
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x03, 0xFF, 0xFF, 0xC0,
+  0x07, 0xFF, 0xFF, 0xE0,
+  0x07, 0x4A, 0x5A, 0x60,
+  0x07, 0x4A, 0x52, 0x60,
+  0x07, 0x4A, 0x52, 0x60,
+  0x07, 0x4A, 0x52, 0x60,
+  0x07, 0x4A, 0x52, 0x60,
+  0x07, 0x4A, 0x52, 0x60,
+  0x07, 0x4A, 0x52, 0x60,
+  0x07, 0x4A, 0x52, 0x60,
+  0x07, 0x4A, 0x52, 0x60,
+  0x07, 0x4A, 0x52, 0x60,
+  0x07, 0xFF, 0xFF, 0xE0,
+  0x03, 0xFF, 0xFF, 0xE0,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00
+};
+
+const uint8_t ICONE_VELA32[] PROGMEM = {
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x03, 0xC0, 0x00,
+  0x00, 0x07, 0xE0, 0x00,
+  0x00, 0x07, 0xE0, 0x00,
+  0x00, 0x07, 0xE0, 0x00,
+  0x00, 0x03, 0xE0, 0x00,
+  0x00, 0x0F, 0xF0, 0x00,
+  0x00, 0x0F, 0xF0, 0x00,
+  0x00, 0x0F, 0xF0, 0x00,
+  0x00, 0x0F, 0xF0, 0x00,
+  0x00, 0x0F, 0xF0, 0x00,
+  0x00, 0x07, 0xF0, 0x00,
+  0x00, 0x07, 0xE0, 0x00,
+  0x00, 0x07, 0xE0, 0x00,
+  0x00, 0x1F, 0xF8, 0x00,
+  0x00, 0x1F, 0xFC, 0x00,
+  0x00, 0x3F, 0xFC, 0x00,
+  0x00, 0x3F, 0xFC, 0x00,
+  0x00, 0x3F, 0xFC, 0x00,
+  0x00, 0x3F, 0xFC, 0x00,
+  0x00, 0x1F, 0xFC, 0x00,
+  0x00, 0x1F, 0xF8, 0x00,
+  0x00, 0x0F, 0xF0, 0x00,
+  0x00, 0x0F, 0xF0, 0x00,
+  0x00, 0x0F, 0xF0, 0x00,
+  0x00, 0x0F, 0xF0, 0x00,
+  0x00, 0x0F, 0xF0, 0x00,
+  0x00, 0x01, 0x80, 0x00,
+  0x00, 0x07, 0x80, 0x00,
+  0x00, 0x07, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00
+};
+
+const uint8_t ICONE_CAMBIO32[] PROGMEM = {
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x20, 0x00,
+  0x00, 0x00, 0xE0, 0x00,
+  0x00, 0x71, 0xF0, 0x00,
+  0x00, 0x7F, 0xF8, 0x00,
+  0x00, 0x7F, 0xFF, 0x00,
+  0x00, 0xFF, 0xFF, 0xC0,
+  0x00, 0xFF, 0xFF, 0xC0,
+  0x03, 0xFF, 0xFF, 0xC0,
+  0x0F, 0xFF, 0xFF, 0xC0,
+  0x0F, 0xF8, 0x1F, 0xC0,
+  0x07, 0xF0, 0x0F, 0xE0,
+  0x07, 0xF0, 0x0F, 0xF0,
+  0x03, 0xF0, 0x07, 0xF8,
+  0x03, 0xF0, 0x07, 0xF8,
+  0x07, 0xF0, 0x0F, 0xF0,
+  0x07, 0xF0, 0x0F, 0xE0,
+  0x0F, 0xF8, 0x1F, 0xC0,
+  0x0F, 0xFE, 0x7F, 0xC0,
+  0x03, 0xFF, 0xFF, 0xC0,
+  0x00, 0xFF, 0xFF, 0xC0,
+  0x00, 0xFF, 0xFF, 0xC0,
+  0x00, 0x7F, 0xFF, 0x00,
+  0x00, 0x7F, 0xF8, 0x00,
+  0x00, 0x71, 0xF0, 0x00,
+  0x00, 0x00, 0xE0, 0x00,
+  0x00, 0x00, 0x20, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00
+};
+
+const uint8_t ICONE_CORREIA32[] PROGMEM = {
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x3F, 0xFC, 0x00,
+  0x00, 0xFF, 0xFF, 0x80,
+  0x03, 0xC0, 0x03, 0xC0,
+  0x07, 0x00, 0x00, 0xE0,
+  0x06, 0xF0, 0x0F, 0x70,
+  0x0D, 0xF8, 0x1F, 0xB0,
+  0x0D, 0x98, 0x19, 0xB0,
+  0x0D, 0x98, 0x19, 0xB0,
+  0x0D, 0xF8, 0x1F, 0xB0,
+  0x0E, 0xF0, 0x0F, 0x70,
+  0x07, 0x00, 0x00, 0xE0,
+  0x03, 0xC0, 0x03, 0xC0,
+  0x01, 0xFF, 0xFF, 0x80,
+  0x00, 0x3F, 0xFC, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00
+};
+
+// embrulha como imagens do LVGL (alpha 1-bit, recoloriveis)
+#define IMG_ICONE(nome, dados) \
+  const lv_img_dsc_t nome = { { LV_IMG_CF_ALPHA_1BIT, 0, 0, 32, 32 }, 128, (dados) }
+
+IMG_ICONE(IMG_OLEO,    ICONE_OLEO32);
+IMG_ICONE(IMG_FILTRO,  ICONE_FILTRO32);
+IMG_ICONE(IMG_VELA,    ICONE_VELA32);
+IMG_ICONE(IMG_CAMBIO,  ICONE_CAMBIO32);
+IMG_ICONE(IMG_CORREIA, ICONE_CORREIA32);
+
+const lv_img_dsc_t* ICONES_MANUT[] = {
+  &IMG_OLEO, &IMG_FILTRO, &IMG_VELA, &IMG_CAMBIO, &IMG_CORREIA
+};
+
+// ============================================================
+//  Tabela DTCs
+// ============================================================
+struct DtcDescricao { const char* codigo; const char* descricao; };
+
+const DtcDescricao DTC_TABLE[] PROGMEM = {
+  {"P0171","Mistura pobre B1"},{"P0172","Mistura rica B1"},
+  {"P0174","Mistura pobre B2"},{"P0175","Mistura rica B2"},
+  {"P0300","Falha ignicao mult."},{"P0301","Falha cilindro 1"},
+  {"P0302","Falha cilindro 2"},{"P0303","Falha cilindro 3"},
+  {"P0304","Falha cilindro 4"},{"P0305","Falha cilindro 5"},
+  {"P0306","Falha cilindro 6"},
+  {"P0420","Catalisador B1"},{"P0430","Catalisador B2"},
+  {"P0130","Sonda lambda B1S1"},{"P0136","Sonda lambda B1S2"},
+  {"P0150","Sonda lambda B2S1"},{"P0156","Sonda lambda B2S2"},
+  {"P0440","Vazamento EVAP"},{"P0442","Vazam EVAP pequeno"},
+  {"P0455","Vazam EVAP grande"},{"P0456","Vazam EVAP minimo"},
+  {"P0100","Sensor MAF"},{"P0101","MAF fora faixa"},
+  {"P0102","MAF baixo"},{"P0103","MAF alto"},{"P0105","Sensor MAP"},
+  {"P0115","Sensor temp motor"},{"P0117","Temp motor baixa"},
+  {"P0118","Temp motor alta"},{"P0125","Demora pra esquentar"},
+  {"P0120","Sensor TPS"},{"P0121","TPS fora faixa"},
+  {"P0122","TPS sinal baixo"},{"P0123","TPS sinal alto"},
+  {"P0500","Sensor velocidade"},{"P0501","Vel fora faixa"},
+  {"P0201","Injetor cil 1"},{"P0202","Injetor cil 2"},
+  {"P0203","Injetor cil 3"},{"P0204","Injetor cil 4"},
+  {"P0351","Bobina cil 1"},{"P0352","Bobina cil 2"},
+  {"P0353","Bobina cil 3"},{"P0354","Bobina cil 4"},
+  {"U0100","Perda com. ECM"},{"U0101","Perda com. TCM"},
+  {"U0121","Perda com. ABS"},{"U0140","Perda com. BCM"},
+  {"P2015","Sensor coletor adm"},{"P2279","Vazam admissao"},
+  {"P0011","Variador adm"},{"P0014","Variador esc"},
+};
+const uint16_t DTC_TABLE_SIZE = sizeof(DTC_TABLE) / sizeof(DtcDescricao);
+
+const char* descricaoDTC(const char* codigo) {
+  for (uint16_t i = 0; i < DTC_TABLE_SIZE; i++) {
+    if (strcmp(codigo, DTC_TABLE[i].codigo) == 0) return DTC_TABLE[i].descricao;
+  }
+  return NULL;
+}
+
+// ============================================================
+//  Debug log
+// ============================================================
+struct DebugHeader {
+  char magic[4]; uint16_t head; uint16_t count; uint32_t total; uint32_t reservado;
+} __attribute__((packed));
+
+struct DebugRecord {
+  uint32_t timestamp_ms; uint32_t unix_ts; uint8_t tipo; uint8_t boot_reason;
+  uint16_t valor1; uint16_t valor2; char msg[16]; uint8_t reservado[2];
+} __attribute__((packed));
+
+// ============================================================
+//  EEPROM low-level
+// ============================================================
+bool eepromWriteBytes(uint16_t addr, uint8_t* buf, uint16_t len) {
+  if (mutex_i2c) xSemaphoreTake(mutex_i2c, portMAX_DELAY);
+  bool ok = true;
+  uint16_t escritos = 0;
+  while (escritos < len) {
+    uint16_t pagina_end = (addr / 32 + 1) * 32;
+    uint16_t pode = pagina_end - addr;
+    if (pode > len - escritos) pode = len - escritos;
+    Wire.beginTransmission(EEPROM_ADDR);
+    Wire.write((addr >> 8) & 0xFF);
+    Wire.write(addr & 0xFF);
+    for (uint16_t i = 0; i < pode; i++) Wire.write(buf[escritos + i]);
+    if (Wire.endTransmission() != 0) { ok = false; break; }
+    vTaskDelay(pdMS_TO_TICKS(6));
+    addr += pode;
+    escritos += pode;
+  }
+  if (mutex_i2c) xSemaphoreGive(mutex_i2c);
+  return ok;
+}
+
+bool eepromReadBytes(uint16_t addr, uint8_t* buf, uint16_t len) {
+  if (mutex_i2c) xSemaphoreTake(mutex_i2c, portMAX_DELAY);
+  bool ok = true;
+  Wire.beginTransmission(EEPROM_ADDR);
+  Wire.write((addr >> 8) & 0xFF);
+  Wire.write(addr & 0xFF);
+  if (Wire.endTransmission() != 0) {
+    ok = false;
+  } else {
+    uint16_t lidos = 0;
+    while (lidos < len) {
+      uint8_t pedaco = min((uint16_t)32, (uint16_t)(len - lidos));
+      Wire.requestFrom(EEPROM_ADDR, pedaco);
+      while (Wire.available() && lidos < len) buf[lidos++] = Wire.read();
+    }
+  }
+  if (mutex_i2c) xSemaphoreGive(mutex_i2c);
+  return ok;
+}
+
+// Wrappers do RTC com mutex I2C (RTC e EEPROM dividem o barramento)
+DateTime rtcNow() {
+  if (mutex_i2c) xSemaphoreTake(mutex_i2c, portMAX_DELAY);
+  DateTime d = rtc.now();
+  if (mutex_i2c) xSemaphoreGive(mutex_i2c);
+  return d;
+}
+void rtcAdjust(const DateTime &dt) {
+  if (mutex_i2c) xSemaphoreTake(mutex_i2c, portMAX_DELAY);
+  rtc.adjust(dt);
+  if (mutex_i2c) xSemaphoreGive(mutex_i2c);
+}
+
+// ============================================================
+//  DEBUG LOG
+// ============================================================
+void salvarDebugHeader() {
+  DebugHeader h;
+  memcpy(h.magic, "DBG1", 4);
+  h.head = debug_log_head; h.count = debug_log_count; h.total = 0; h.reservado = 0;
+  eepromWriteBytes(DEBUG_LOG_ADDR, (uint8_t*)&h, sizeof(h));
+}
+bool carregarDebugHeader() {
+  DebugHeader h;
+  eepromReadBytes(DEBUG_LOG_ADDR, (uint8_t*)&h, sizeof(h));
+  if (memcmp(h.magic, "DBG1", 4) != 0) return false;
+  debug_log_head = h.head; debug_log_count = h.count;
+  return true;
+}
+void formatarDebugLog() { debug_log_head = 0; debug_log_count = 0; salvarDebugHeader(); }
+
+void debugLog(uint8_t tipo, const char* msg, uint16_t v1 = 0, uint16_t v2 = 0, uint8_t bootReason = 0) {
+  if (xSemaphoreTake(mutex_debug, pdMS_TO_TICKS(100)) != pdTRUE) return;
+  DebugRecord r;
+  r.timestamp_ms = millis();
+  r.unix_ts = 0;
+  if (rtc_ok) r.unix_ts = rtcNow().unixtime();
+  r.tipo = tipo; r.boot_reason = bootReason; r.valor1 = v1; r.valor2 = v2;
+  strncpy(r.msg, msg, 15); r.msg[15] = 0; memset(r.reservado, 0, 2);
+  uint16_t addr = DEBUG_LOG_ADDR + DEBUG_HEADER_SIZE + (debug_log_head * DEBUG_RECORD_SIZE);
+  eepromWriteBytes(addr, (uint8_t*)&r, DEBUG_RECORD_SIZE);
+  debug_log_head = (debug_log_head + 1) % MAX_DEBUG_RECORDS;
+  if (debug_log_count < MAX_DEBUG_RECORDS) debug_log_count++;
+  static uint8_t dbg_hdr_skip = 0;
+  if ((++dbg_hdr_skip & 3) == 0) salvarDebugHeader();  // header a cada 4: menos desgaste
+  xSemaphoreGive(mutex_debug);
+  const char* tipos[] = {"INFO", "WARN", "ERR ", "BOOT", "BEAT"};
+  Serial.printf("[DBG %s] %s v1=%u v2=%u\n", (tipo < 5) ? tipos[tipo] : "?", r.msg, v1, v2);
+}
+
+void dumpDebugLog() {
+  Serial.println("\n========== DEBUG LOG ==========");
+  Serial.printf("Total: %u/%u (head=%u)\n", debug_log_count, MAX_DEBUG_RECORDS, debug_log_head);
+  if (debug_log_count == 0) { Serial.println("Vazio."); return; }
+  uint16_t start = (debug_log_count < MAX_DEBUG_RECORDS) ? 0 : ((debug_log_head + 1) % MAX_DEBUG_RECORDS);
+  const char* tipos[] = {"INFO", "WARN", "ERR ", "BOOT", "BEAT"};
+  const char* boots[] = {"POWERON","EXT","SOFT","WATCHDOG","DEEPSL","BROWNOUT","SDIO","RTCWDT","INTWDT","TG0WDT","TG1WDT","RTCWDT_RTC"};
+  for (uint16_t i = 0; i < debug_log_count; i++) {
+    uint16_t idx = (start + i) % MAX_DEBUG_RECORDS;
+    uint16_t addr = DEBUG_LOG_ADDR + DEBUG_HEADER_SIZE + (idx * DEBUG_RECORD_SIZE);
+    DebugRecord r;
+    eepromReadBytes(addr, (uint8_t*)&r, DEBUG_RECORD_SIZE);
+    Serial.printf("#%02u [%-4s] ms=%lu ts=%lu %s", i, (r.tipo < 5) ? tipos[r.tipo] : "?", r.timestamp_ms, r.unix_ts, r.msg);
+    if (r.tipo == 3) Serial.printf(" boot=%s", (r.boot_reason < 12) ? boots[r.boot_reason] : "?");
+    if (r.valor1 || r.valor2) Serial.printf(" v1=%u v2=%u", r.valor1, r.valor2);
+    Serial.println();
+  }
+  Serial.println("===============================\n");
+}
+
+// ============================================================
+//  Header Logger
+// ============================================================
+void salvarHeader() {
+  EepromHeader h;
+  memcpy(h.magic, "MGRD", 4);
+  h.versao = 6; h.head = log_head; h.count = log_count; h.total = log_total;
+  memset(h.reservado, 0, 3);
+  eepromWriteBytes(0, (uint8_t*)&h, sizeof(h));
+}
+bool carregarHeader() {
+  EepromHeader h;
+  eepromReadBytes(0, (uint8_t*)&h, sizeof(h));
+  if (memcmp(h.magic, "MGRD", 4) != 0) return false;
+  if (h.versao != 6) return false;   // v6: MAX_RECORDS mudou de 180 p/ 176
+  log_head = h.head; log_count = h.count; log_total = h.total;
+  return true;
+}
+void formatarEEPROM() {
+  Serial.println("[Logger] Formatando...");
+  log_head = 0; log_count = 0; log_total = 0; salvarHeader();
+}
+
+// ============================================================
+//  Config persistente (calibracoes)
+// ============================================================
+static uint8_t somaCRC(uint8_t* p, uint8_t n) {
+  uint8_t s = 0; for (uint8_t i = 0; i < n; i++) s += p[i]; return s;
+}
+
+void salvarConfig() {
+  EepromConfig c = {};
+  memcpy(c.magic, "CFG1", 4);
+  c.voltcal = voltcal; c.km_cal = km_cal;
+  c.crc = somaCRC((uint8_t*)&c, 12);
+  eepromWriteBytes(CONFIG_ADDR, (uint8_t*)&c, sizeof(c));
+}
+bool carregarConfig() {
+  EepromConfig c;
+  if (!eepromReadBytes(CONFIG_ADDR, (uint8_t*)&c, sizeof(c))) return false;
+  if (memcmp(c.magic, "CFG1", 4) != 0) return false;
+  if (c.crc != somaCRC((uint8_t*)&c, 12)) return false;
+  // sanidade: rejeita valores absurdos (EEPROM corrompida nunca pode aleijar a leitura)
+  if (c.voltcal > 0.5f && c.voltcal < 2.0f) voltcal = c.voltcal;
+  if (c.km_cal  > 0.5f && c.km_cal  < 2.0f) km_cal  = c.km_cal;
+  return true;
+}
+
+// ============================================================
+//  Hodometro
+// ============================================================
+static uint32_t odo_seq = 0;   // sequencia da gravacao alternada
+
+void salvarHodometro() {
+  OdoSlot s = {};
+  memcpy(s.magic, "ODO2", 4);
+  if (xSemaphoreTake(mutex_hodometro, pdMS_TO_TICKS(100)) == pdTRUE) {
+    s.km_total_x100 = km_total_x100; s.segundos_motor = segundos_motor_total;
+    xSemaphoreGive(mutex_hodometro);
+  }
+  s.seq = ++odo_seq;
+  s.crc = somaCRC((uint8_t*)&s, 16);
+  // alterna o slot: seq impar -> A, par -> B (o slot antigo fica intacto durante a gravacao)
+  uint16_t addr = (odo_seq & 1) ? ODO_SLOT_A : ODO_SLOT_B;
+  eepromWriteBytes(addr, (uint8_t*)&s, sizeof(s));
+}
+
+static bool lerSlotOdo(uint16_t addr, OdoSlot &s) {
+  if (!eepromReadBytes(addr, (uint8_t*)&s, sizeof(s))) return false;
+  if (memcmp(s.magic, "ODO2", 4) != 0) return false;
+  return s.crc == somaCRC((uint8_t*)&s, 16);
+}
+
+bool carregarHodometro() {
+  OdoSlot a, b;
+  bool va = lerSlotOdo(ODO_SLOT_A, a);
+  bool vb = lerSlotOdo(ODO_SLOT_B, b);
+  if (va || vb) {
+    OdoSlot &m = (va && vb) ? ((a.seq >= b.seq) ? a : b) : (va ? a : b);
+    if (va && vb && a.seq != b.seq) Serial.printf("[Odo] slots A=%lu B=%lu -> usando %lu\n", a.seq, b.seq, m.seq);
+    odo_seq = m.seq;
+    if (xSemaphoreTake(mutex_hodometro, pdMS_TO_TICKS(100)) == pdTRUE) {
+      km_total_x100 = m.km_total_x100; segundos_motor_total = m.segundos_motor;
+      xSemaphoreGive(mutex_hodometro);
+    }
+    return true;
+  }
+  // migracao: formato antigo (slot unico em HODOMETRO_ADDR)
+  EepromHodometro h;
+  eepromReadBytes(HODOMETRO_ADDR, (uint8_t*)&h, sizeof(h));
+  if (memcmp(h.magic, "ODOM", 4) != 0) return false;
+  Serial.println("[Odo] migrando formato antigo -> slots duplos");
+  if (xSemaphoreTake(mutex_hodometro, pdMS_TO_TICKS(100)) == pdTRUE) {
+    km_total_x100 = h.km_total_x100; segundos_motor_total = h.segundos_motor;
+    xSemaphoreGive(mutex_hodometro);
+  }
+  salvarHodometro(); salvarHodometro();  // grava nos dois slots
+  return true;
+}
+void formatarHodometro() {
+  Serial.println("[Odo] Formatando...");
+  if (xSemaphoreTake(mutex_hodometro, pdMS_TO_TICKS(100)) == pdTRUE) {
+    km_total_x100 = 0; segundos_motor_total = 0; km_acumulado_x100 = 0;
+    xSemaphoreGive(mutex_hodometro);
+  }
+  salvarHodometro(); salvarHodometro();  // zera os DOIS slots
+}
+
+// ============================================================
+//  Manutencao
+// ============================================================
+void salvarItensManutencao() {
+  if (xSemaphoreTake(mutex_manut, pdMS_TO_TICKS(200)) != pdTRUE) return;
+  for (int i = 0; i < NUM_ITENS_MANUT; i++) {
+    uint16_t addr = MANUTENCAO_ADDR + (i * ITEM_SIZE);
+    eepromWriteBytes(addr, (uint8_t*)&itens_manut[i], sizeof(ItemManutencao));
+  }
+  xSemaphoreGive(mutex_manut);
+}
+bool carregarItensManutencao() {
+  if (xSemaphoreTake(mutex_manut, pdMS_TO_TICKS(200)) != pdTRUE) return false;
+  bool ok = true;
+  for (int i = 0; i < NUM_ITENS_MANUT; i++) {
+    uint16_t addr = MANUTENCAO_ADDR + (i * ITEM_SIZE);
+    eepromReadBytes(addr, (uint8_t*)&itens_manut[i], sizeof(ItemManutencao));
+    if (memcmp(itens_manut[i].magic, "MT", 2) != 0) { ok = false; break; }
+  }
+  xSemaphoreGive(mutex_manut);
+  return ok;
+}
+void inicializarManutencao() {
+  Serial.println("[Manut] Inicializando defaults...");
+  if (xSemaphoreTake(mutex_manut, pdMS_TO_TICKS(200)) != pdTRUE) return;
+  DateTime agora = rtcNow();
+  uint32_t ts = agora.unixtime();
+  for (int i = 0; i < NUM_ITENS_MANUT; i++) {
+    memcpy(itens_manut[i].magic, "MT", 2);
+    itens_manut[i].tipo = i; itens_manut[i].flags = 0;
+    itens_manut[i].km_ultima = 0; itens_manut[i].timestamp_ultima = ts;
+    memset(itens_manut[i].reservado, 0, 10);
+  }
+  itens_manut[IDX_OLEO_MOTOR].km_intervalo = 10000;  itens_manut[IDX_OLEO_MOTOR].dias_intervalo = 180;
+  itens_manut[IDX_FILTRO_AR].km_intervalo = 10000;   itens_manut[IDX_FILTRO_AR].dias_intervalo = 180;
+  itens_manut[IDX_VELA].km_intervalo = VELA_NORMAL_KM; itens_manut[IDX_VELA].dias_intervalo = 0;
+  itens_manut[IDX_OLEO_CAMBIO].km_intervalo = 80000; itens_manut[IDX_OLEO_CAMBIO].dias_intervalo = 0;
+  itens_manut[IDX_CORREIA].km_intervalo = 60000;     itens_manut[IDX_CORREIA].dias_intervalo = 1095;
+  xSemaphoreGive(mutex_manut);
+  salvarItensManutencao();
+}
+void resetarItem(uint8_t idx) {
+  if (idx >= NUM_ITENS_MANUT) return;
+  if (xSemaphoreTake(mutex_manut, pdMS_TO_TICKS(200)) != pdTRUE) return;
+  DateTime agora = rtcNow();
+  uint32_t km_atual = 0;
+  if (xSemaphoreTake(mutex_hodometro, pdMS_TO_TICKS(50)) == pdTRUE) {
+    km_atual = (km_total_x100 + km_acumulado_x100) / 100;
+    xSemaphoreGive(mutex_hodometro);
+  }
+  itens_manut[idx].km_ultima = km_atual;
+  itens_manut[idx].timestamp_ultima = agora.unixtime();
+  xSemaphoreGive(mutex_manut);
+  salvarItensManutencao();
+  Serial.printf("[Manut] %s resetado em %lukm\n", NOMES_ITENS[idx], km_atual);
+}
+bool itemVencido(uint8_t idx, uint32_t km_atual, uint32_t ts_atual) {
+  ItemManutencao &item = itens_manut[idx];
+  // CORRECAO A: protege underflow. Apos ZERAR TUDO, km_atual=0 < km_ultima (valor antigo)
+  // e a subtracao sem sinal viraria um numero gigante -> item aparecia "VENC." falso.
+  uint32_t km_rodado = (km_atual >= item.km_ultima) ? (km_atual - item.km_ultima) : 0;
+  if (km_rodado >= item.km_intervalo) return true;
+  if (item.dias_intervalo > 0 && ts_atual >= item.timestamp_ultima) {
+    uint32_t segs = ts_atual - item.timestamp_ultima;
+    if (segs / 86400 >= item.dias_intervalo) return true;
+  }
+  return false;
+}
+uint16_t itemPercentual(uint8_t idx, uint32_t km_atual, uint32_t ts_atual) {
+  ItemManutencao &item = itens_manut[idx];
+  if (item.km_intervalo == 0) return 0;  // guarda contra divisao por zero
+  // CORRECAO A: mesmo cuidado com underflow do calculo de percentual.
+  uint32_t km_rodado = (km_atual >= item.km_ultima) ? (km_atual - item.km_ultima) : 0;
+  uint16_t pct_km = (km_rodado * 100) / item.km_intervalo;
+  uint16_t pct_tempo = 0;
+  if (item.dias_intervalo > 0 && ts_atual >= item.timestamp_ultima) {
+    uint32_t segs = ts_atual - item.timestamp_ultima;
+    pct_tempo = ((segs / 86400) * 100) / item.dias_intervalo;
+  }
+  return (pct_km > pct_tempo) ? pct_km : pct_tempo;
+}
+
+// ============================================================
+//  Gravar log
+// ============================================================
+void gravarRegistro(uint8_t tipo_evento) {
+  DateTime agora = rtcNow();
+  DadosCarro d;
+  if (xSemaphoreTake(mutex_dados, pdMS_TO_TICKS(100)) != pdTRUE) return;
+  d = dados_publicos;
+  xSemaphoreGive(mutex_dados);
+  LogRecord r;
+  r.timestamp = agora.unixtime();
+  r.evento = tipo_evento;
+  r.rpm = (d.rpm >= 0) ? d.rpm : 0;
+  r.velocidade = (d.velocidade >= 0) ? d.velocidade : 0;
+  r.temp_motor = (d.temp_motor >= -40) ? d.temp_motor : 0;
+  r.tps = (d.tps >= 0) ? d.tps : 0;
+  r.ped_abs = (d.ped_abs >= 0) ? d.ped_abs : 0;
+  r.tensao_x10 = (d.tensao >= 0) ? (uint8_t)(d.tensao * 10) : 0;
+  r.carga = (d.carga >= 0) ? d.carga : 0;
+  r.carga_abs = (d.carga_abs >= 0) ? d.carga_abs : 0;
+  r.combust = (d.combust >= 0) ? d.combust : 0;
+  r.temp_adm = (d.temp_adm >= -40) ? d.temp_adm : 0;
+  uint8_t* p = (uint8_t*)&r;
+  uint8_t soma = 0;
+  for (int i = 0; i < 15; i++) soma += p[i];
+  r.crc = soma;
+  uint16_t addr = LOGS_BASE + (log_head * RECORD_SIZE);
+  if (eepromWriteBytes(addr, (uint8_t*)&r, RECORD_SIZE)) {
+    log_head = (log_head + 1) % MAX_RECORDS;
+    if (log_count < MAX_RECORDS) log_count++;
+    log_total++;
+    // header so a cada 8 registros: 8x menos desgaste no endereco 0 da EEPROM.
+    if ((log_total & 7) == 0) salvarHeader();
+  }
+}
+
+// ============================================================
+//  CAN OBD-II
+// ============================================================
+// ===== Protocolo OBD autodetectado (ISO 15765-4) =====
+volatile uint32_t obd_req_id   = 0x7DF;   // ID do pedido funcional
+volatile bool     obd_extd     = false;   // false=11bit, true=29bit
+volatile uint32_t obd_resp_min = 0x7E8;   // faixa de resposta (11bit)
+volatile uint32_t obd_resp_max = 0x7EF;
+volatile uint16_t obd_baud     = 500;     // 500 ou 250 kbps
+volatile bool     obd_ok       = false;   // protocolo detectado?
+
+// Confere se um frame recebido e uma resposta OBD valida no protocolo atual
+bool ehRespostaOBD(const twai_message_t &rx) {
+  if (obd_extd) {
+    // 29-bit: respostas em 0x18DAF1xx
+    return rx.extd && ((rx.identifier & 0xFFFFFF00) == 0x18DAF100);
+  }
+  return (!rx.extd) && rx.identifier >= obd_resp_min && rx.identifier <= obd_resp_max;
+}
+
+// ID de flow control (fisico) a partir do ID que respondeu
+uint32_t fcIdDaResposta(uint32_t resp_id, bool extd) {
+  if (extd) {
+    // 0x18DAF1<src>  ->  0x18DA<src>F1
+    uint8_t src = resp_id & 0xFF;
+    return 0x18DA00F1 | ((uint32_t)src << 8);
+  }
+  return resp_id - 8;   // 0x7E8 -> 0x7E0
+}
+
+// (Re)instala o driver TWAI no baud indicado, com checagem de erro
+bool instalarCAN(uint16_t baud) {
+  twai_general_config_t g = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_PIN, CAN_RX_PIN, TWAI_MODE_NORMAL);
+  g.rx_queue_len = 32;   // barramento cheio (ex.: Cruze) -> fila maior evita perder respostas
+  g.tx_queue_len = 10;
+  twai_timing_config_t  t500 = TWAI_TIMING_CONFIG_500KBITS();
+  twai_timing_config_t  t250 = TWAI_TIMING_CONFIG_250KBITS();
+  twai_timing_config_t  t = (baud == 250) ? t250 : t500;  // ternario sobre variaveis, nao sobre as macros
+  twai_filter_config_t  f = TWAI_FILTER_CONFIG_ACCEPT_ALL();
+  esp_err_t e = twai_driver_install(&g, &t, &f);
+  if (e != ESP_OK) { Serial.printf("[CAN] driver_install %dk falhou: %s\n", baud, esp_err_to_name(e)); return false; }
+  e = twai_start();
+  if (e != ESP_OK) { Serial.printf("[CAN] start %dk falhou: %s\n", baud, esp_err_to_name(e)); twai_driver_uninstall(); return false; }
+  return true;
+}
+
+// Reinicia o driver do zero (faz o que religar na tomada faz: limpa erro acumulado)
+void reiniciarCAN() {
+  Serial.println("[CAN] reiniciando driver (travou/bus-off)");
+  twai_stop();
+  twai_driver_uninstall();
+  vTaskDelay(pdMS_TO_TICKS(50));
+  instalarCAN(obd_baud);
+}
+
+// Envia mode01/PID00 (obrigatorio) e ve se ha resposta no par (reqid, extd)
+bool sondaOBD(uint32_t reqid, bool extd) {
+  twai_message_t lixo;
+  while (twai_receive(&lixo, 0) == ESP_OK) {}  // limpa fila
+  twai_message_t tx = {};
+  tx.identifier = reqid; tx.extd = extd ? 1 : 0; tx.data_length_code = 8;
+  tx.data[0] = 0x02; tx.data[1] = 0x01; tx.data[2] = 0x00;  // PIDs suportados
+  for (int i = 3; i < 8; i++) tx.data[i] = 0x00;
+  if (twai_transmit(&tx, pdMS_TO_TICKS(80)) != ESP_OK) return false;
+  uint32_t t0 = millis();
+  while (millis() - t0 < 300) {
+    twai_message_t rx;
+    if (twai_receive(&rx, pdMS_TO_TICKS(60)) == ESP_OK) {
+      if (!extd && !rx.extd && rx.identifier >= 0x7E8 && rx.identifier <= 0x7EF && rx.data[1] == 0x41) return true;
+      if (extd &&  rx.extd && ((rx.identifier & 0xFFFFFF00) == 0x18DAF100) && rx.data[1] == 0x41) return true;
+    }
+  }
+  return false;
+}
+
+// Escuta o barramento passivamente (NAO transmite nada) e reporta no Serial.
+uint32_t sniffCAN(uint16_t baud, uint16_t ms) {
+  uint32_t n = 0, n11 = 0, n29 = 0;
+  uint32_t ids[8]; int nids = 0;
+  uint32_t t0 = millis();
+  while (millis() - t0 < ms) {
+    twai_message_t rx;
+    if (twai_receive(&rx, pdMS_TO_TICKS(20)) == ESP_OK) {
+      n++;
+      if (rx.extd) n29++; else n11++;
+      bool novo = true;
+      for (int i = 0; i < nids; i++) if (ids[i] == rx.identifier) { novo = false; break; }
+      if (novo && nids < 8) ids[nids++] = rx.identifier;
+    }
+  }
+  Serial.printf("[SNIFF] %dk: %lu frames (11b:%lu 29b:%lu)", baud, n, n11, n29);
+  if (nids > 0) {
+    Serial.print(" ex:");
+    for (int i = 0; i < nids; i++) Serial.printf(" %03X", (unsigned)ids[i]);
+  }
+  Serial.println();
+  return n;
+}
+
+// Tenta 11/500 -> 29/500 -> 11/250 -> 29/250 e trava no que responder
+bool detectarProtocoloOBD() {
+  const uint16_t bauds[] = {500, 250};
+  for (int b = 0; b < 2; b++) {
+    if (!instalarCAN(bauds[b])) { Serial.printf("[CAN] falha ao instalar driver em %dk\n", bauds[b]); continue; }
+    delay(150);
+    uint32_t vistos = sniffCAN(bauds[b], 600);   // escuta passiva primeiro
+    if (sondaOBD(0x7DF, false)) {
+      obd_req_id = 0x7DF; obd_extd = false; obd_resp_min = 0x7E8; obd_resp_max = 0x7EF;
+      obd_baud = bauds[b]; obd_ok = true;
+      Serial.printf("[CAN] >>> Protocolo: 11-bit / %dk <<<\n", obd_baud);
+      return true;
+    }
+    if (sondaOBD(0x18DB33F1, true)) {
+      obd_req_id = 0x18DB33F1; obd_extd = true;
+      obd_baud = bauds[b]; obd_ok = true;
+      Serial.printf("[CAN] >>> Protocolo: 29-bit / %dk <<<\n", obd_baud);
+      return true;
+    }
+    Serial.printf("[CAN] %dk: sem resposta OBD (frames vistos no barramento: %lu)\n", bauds[b], vistos);
+    twai_stop();
+    twai_driver_uninstall();   // reseta o controlador antes do proximo baud
+  }
+  // Nada detectado: deixa instalado no padrao para nao travar o resto
+  instalarCAN(500);
+  obd_req_id = 0x7DF; obd_extd = false; obd_resp_min = 0x7E8; obd_resp_max = 0x7EF; obd_baud = 500;
+  Serial.println("[CAN] Nenhum protocolo respondeu (default 11/500)");
+  return false;
+}
+
+bool obdRequest(uint8_t pid, uint8_t* resp, uint8_t* len) {
+  // limpa frames antigos da fila ANTES de perguntar: em barramento cheio (Cruze) a fila
+  // enchia de mensagens de outros modulos e a resposta era descartada por overflow.
+  twai_message_t lixo;
+  while (twai_receive(&lixo, 0) == ESP_OK) { /* descarta */ }
+  twai_message_t tx = {};
+  tx.identifier = obd_req_id; tx.extd = obd_extd ? 1 : 0; tx.data_length_code = 8;
+  tx.data[0] = 0x02; tx.data[1] = 0x01; tx.data[2] = pid;
+  for (int i = 3; i < 8; i++) tx.data[i] = 0x00;
+  if (twai_transmit(&tx, pdMS_TO_TICKS(80)) != ESP_OK) return false;
+  tx_ok++;
+  uint32_t t0 = millis();
+  while (millis() - t0 < 150) {
+    twai_message_t rx;
+    if (twai_receive(&rx, pdMS_TO_TICKS(50)) == ESP_OK) {
+      if (ehRespostaOBD(rx) && rx.data[1] == 0x41 && rx.data[2] == pid) {
+        *len = rx.data[0] - 2;
+        memcpy(resp, &rx.data[3], *len);
+        rx_ok++;
+        return true;
+      }
+    }
+  }
+  timeouts++;
+  return false;
+}
+
+void descobrirPIDs() {
+  Serial.println("\n=== AUTO-DESCOBERTA ===");
+  uint8_t ranges[] = {0x00, 0x20, 0x40, 0x60, 0x80, 0xA0, 0xC0};
+  for (int r = 0; r < 7; r++) {
+    uint8_t pid_inicial = ranges[r];
+    uint8_t resp[8], len;
+    bool ok = false;
+    for (int t = 0; t < 3 && !ok; t++) {
+      ok = obdRequest(pid_inicial, resp, &len);
+      if (!ok) vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    if (!ok || len < 4) break;
+    for (int byte = 0; byte < 4; byte++) {
+      for (int bit = 0; bit < 8; bit++) {
+        if (resp[byte] & (0x80 >> bit)) {
+          uint8_t pid = pid_inicial + (byte * 8) + bit + 1;
+          pid_suportado[pid] = true;
+        }
+      }
+    }
+    if (!(resp[3] & 0x01)) break;
+  }
+  // garante os essenciais: a descoberta pode vir incompleta em barramento cheio
+  pid_suportado[0x05] = true;  // temperatura do motor
+  pid_suportado[0x0C] = true;  // rpm
+  pid_suportado[0x0D] = true;  // velocidade
+  pid_suportado[0x2F] = true;  // nivel de combustivel
+  int total = 0;
+  for (int i = 1; i < 256; i++) if (pid_suportado[i]) total++;
+  Serial.printf("Total PIDs suportados: %d\n", total);
+  debugLog(0, "PIDs descobertos", total);
+}
+
+int f_rpm(uint8_t* d) { return ((d[0]*256)+d[1])/4; }
+int f_vel(uint8_t* d) { return d[0]; }
+int f_temp(uint8_t* d) { return d[0]-40; }
+int f_pct(uint8_t* d) { return (d[0]*100)/255; }
+int f_raw(uint8_t* d) { return d[0]; }
+int f_16bit(uint8_t* d) { return (d[0]*256)+d[1]; }
+int f_carga_abs(uint8_t* d) { return ((d[0]*256)+d[1])*100/255; }
+float f_tensao(uint8_t* d) { return ((d[0]*256)+d[1])/1000.0; }
+
+// CORRECAO B: sentinela de erro = -1000 (fora da faixa valida de qualquer PID).
+// Antes era -1, que colidia com a faixa de temperatura (-40..215): leitura falha
+// virava "TEMP -1C" na tela. Com -1000 o teste 'valor >= -40' rejeita a falha.
+#define PID_ERRO (-1000)
+int lerPID_int(uint8_t pid, int (*formula)(uint8_t*)) {
+  if (!pid_suportado[pid]) return PID_ERRO;
+  uint8_t d[8], len;
+  if (obdRequest(pid, d, &len)) return formula(d);
+  return PID_ERRO;
+}
+float lerPID_float(uint8_t pid, float (*formula)(uint8_t*)) {
+  if (!pid_suportado[pid]) return -1.0;
+  uint8_t d[8], len;
+  if (obdRequest(pid, d, &len)) return formula(d);
+  return -1.0;
+}
+
+// ===== Tensao da bateria pelo ADC (independente do CAN) =====
+float lerTensaoADC() {
+  uint32_t soma = 0;
+  for (int i = 0; i < 16; i++) soma += analogReadMilliVolts(PIN_VBAT);
+  float vpin = (soma / 16.0) / 1000.0;     // V no pino do ESP
+  return vpin * VBAT_RATIO * voltcal;      // V real da bateria
+}
+
+// ============================================================
+//  DTCs
+// ============================================================
+void decodificaDTC(uint8_t b1, uint8_t b2, char* out) {
+  char tipo = 'P';
+  switch ((b1 >> 6) & 0x03) {
+    case 0: tipo = 'P'; break; case 1: tipo = 'C'; break;
+    case 2: tipo = 'B'; break; case 3: tipo = 'U'; break;
+  }
+  uint8_t d1 = (b1 >> 4) & 0x03; uint8_t d2 = b1 & 0x0F;
+  uint8_t d3 = (b2 >> 4) & 0x0F; uint8_t d4 = b2 & 0x0F;
+  snprintf(out, 6, "%c%X%X%X%X", tipo, d1, d2, d3, d4);
+}
+
+int lerDTCs(char dtcs[][6]) {
+  twai_message_t tx = {};
+  tx.identifier = obd_req_id; tx.extd = obd_extd ? 1 : 0; tx.data_length_code = 8;
+  tx.data[0] = 0x01; tx.data[1] = 0x03;
+  for (int i = 2; i < 8; i++) tx.data[i] = 0x00;
+  if (twai_transmit(&tx, pdMS_TO_TICKS(100)) != ESP_OK) return -1;
+  tx_ok++;
+  int num_dtcs = 0;
+  uint32_t t0 = millis();
+  while (millis() - t0 < 800 && num_dtcs < MAX_DTCS) {
+    twai_message_t rx;
+    if (twai_receive(&rx, pdMS_TO_TICKS(100)) != ESP_OK) continue;
+    if (!ehRespostaOBD(rx)) continue;
+    rx_ok++;
+    uint8_t pci = rx.data[0] & 0xF0;
+    if (pci == 0x00) {
+      if (rx.data[1] != 0x43) continue;
+      uint8_t qtd = rx.data[2];
+      for (int i = 0; i < qtd && i < 2 && num_dtcs < MAX_DTCS; i++) {
+        uint8_t b1 = rx.data[3 + i*2]; uint8_t b2 = rx.data[4 + i*2];
+        if (b1 == 0 && b2 == 0) continue;
+        decodificaDTC(b1, b2, dtcs[num_dtcs]); num_dtcs++;
+      }
+      return num_dtcs;
+    } else if (pci == 0x10) {
+      if (rx.data[2] != 0x43) continue;
+      uint8_t qtd = rx.data[3];
+      for (int i = 0; i < 2 && i < qtd && num_dtcs < MAX_DTCS; i++) {
+        uint8_t b1 = rx.data[4 + i*2]; uint8_t b2 = rx.data[5 + i*2];
+        if (b1 == 0 && b2 == 0) continue;
+        decodificaDTC(b1, b2, dtcs[num_dtcs]); num_dtcs++;
+      }
+      twai_message_t fc = {};
+      fc.identifier = fcIdDaResposta(rx.identifier, obd_extd); fc.extd = obd_extd ? 1 : 0; fc.data_length_code = 8;
+      fc.data[0] = 0x30; fc.data[1] = 0x00; fc.data[2] = 0x00;
+      for (int i = 3; i < 8; i++) fc.data[i] = 0x00;
+      twai_transmit(&fc, pdMS_TO_TICKS(50));
+      uint32_t t1 = millis();
+      while (millis() - t1 < 500 && num_dtcs < MAX_DTCS) {
+        twai_message_t cf;
+        if (twai_receive(&cf, pdMS_TO_TICKS(100)) != ESP_OK) continue;
+        if (!ehRespostaOBD(cf)) continue;
+        if ((cf.data[0] & 0xF0) != 0x20) continue;
+        for (int i = 1; i < 8 && num_dtcs < MAX_DTCS; i++) {
+          uint8_t b1 = cf.data[i]; uint8_t b2 = 0;
+          if (b1 != 0) { decodificaDTC(b1, b2, dtcs[num_dtcs]); num_dtcs++; }
+        }
+      }
+      return num_dtcs;
+    }
+  }
+  return -1;
+}
+
+bool apagarDTCs() {
+  twai_message_t tx = {};
+  tx.identifier = obd_req_id; tx.extd = obd_extd ? 1 : 0; tx.data_length_code = 8;
+  tx.data[0] = 0x01; tx.data[1] = 0x04;
+  for (int i = 2; i < 8; i++) tx.data[i] = 0x00;
+  if (twai_transmit(&tx, pdMS_TO_TICKS(100)) != ESP_OK) return false;
+  tx_ok++;
+  uint32_t t0 = millis();
+  while (millis() - t0 < 800) {
+    twai_message_t rx;
+    if (twai_receive(&rx, pdMS_TO_TICKS(100)) != ESP_OK) continue;
+    if (ehRespostaOBD(rx)) {
+      rx_ok++;
+      if (rx.data[1] == 0x44) return true;
+      if (rx.data[1] == 0x7F && rx.data[2] == 0x04) return false;
+    }
+  }
+  timeouts++;
+  return false;
+}
+
+// ============================================================
+//  Sondagem combustivel (Mode 22 / UDS)
+// ============================================================
+void flushCAN() {
+  twai_message_t rx;
+  int n = 0;
+  while (twai_receive(&rx, 0) == ESP_OK && n < 64) n++;
+}
+
+int lerDID22(uint32_t reqId, uint16_t did, uint8_t* out, int maxOut) {
+  flushCAN();
+  uint8_t dh = (did >> 8) & 0xFF, dl = did & 0xFF;
+  twai_message_t tx = {};
+  tx.identifier = reqId; tx.data_length_code = 8;
+  tx.data[0] = 0x03; tx.data[1] = 0x22; tx.data[2] = dh; tx.data[3] = dl;
+  for (int i = 4; i < 8; i++) tx.data[i] = 0x00;
+  if (twai_transmit(&tx, pdMS_TO_TICKS(80)) != ESP_OK) return -1;
+  tx_ok++;
+  uint32_t t0 = millis();
+  while (millis() - t0 < 350) {
+    twai_message_t rx;
+    if (twai_receive(&rx, pdMS_TO_TICKS(60)) != ESP_OK) continue;
+    if (rx.identifier < 0x700 || rx.identifier > 0x7FF) continue;
+    uint8_t pci = rx.data[0] & 0xF0;
+    if (pci == 0x00 && rx.data[1] == 0x62 && rx.data[2] == dh && rx.data[3] == dl) {
+      int n = (rx.data[0] & 0x0F) - 3;
+      if (n < 0) n = 0; if (n > maxOut) n = maxOut;
+      for (int i = 0; i < n; i++) out[i] = rx.data[4 + i];
+      rx_ok++; return n;
+    }
+    if (pci == 0x10 && rx.data[2] == 0x62 && rx.data[3] == dh && rx.data[4] == dl) {
+      int total = ((rx.data[0] & 0x0F) << 8) | rx.data[1];
+      int dataTotal = total - 3;
+      int idx = 0;
+      for (int i = 5; i < 8 && idx < dataTotal && idx < maxOut; i++) out[idx++] = rx.data[i];
+      twai_message_t fc = {};
+      fc.identifier = reqId; fc.data_length_code = 8;
+      fc.data[0] = 0x30; fc.data[1] = 0x00; fc.data[2] = 0x00;
+      for (int i = 3; i < 8; i++) fc.data[i] = 0x00;
+      twai_transmit(&fc, pdMS_TO_TICKS(50));
+      uint32_t t1 = millis();
+      while (idx < dataTotal && idx < maxOut && millis() - t1 < 350) {
+        twai_message_t cf;
+        if (twai_receive(&cf, pdMS_TO_TICKS(60)) != ESP_OK) continue;
+        if (cf.identifier < 0x700 || cf.identifier > 0x7FF) continue;
+        if ((cf.data[0] & 0xF0) != 0x20) continue;
+        for (int i = 1; i < 8 && idx < dataTotal && idx < maxOut; i++) out[idx++] = cf.data[i];
+      }
+      rx_ok++; return idx;
+    }
+  }
+  return -1;
+}
+
+void detectarMetodoCombustivel() {
+  uint8_t d[8], len;
+  bool ok2F = false;
+  for (int t = 0; t < 3 && !ok2F; t++) {   // barramento cheio: tenta algumas vezes
+    if (obdRequest(0x2F, d, &len) && d[0] != 0xFF) ok2F = true;
+    else vTaskDelay(pdMS_TO_TICKS(80));
+  }
+  if (ok2F) {
+    fuel_metodo = 1;
+    Serial.println("[Fuel] metodo = PID 0x2F (padrao)");
+    return;
+  }
+  uint8_t vin[20];
+  int n = lerDID22(VW_CLUSTER_REQ, 0xF190, vin, sizeof(vin));
+  if (n >= 3) {
+    char wmi[4] = { (char)vin[0], (char)vin[1], (char)vin[2], 0 };
+    Serial.printf("[Fuel] VIN WMI = %s\n", wmi);
+    bool ehVW = (vin[0] == 'W' && vin[1] == 'V') ||
+                (vin[0] == '9' && vin[1] == 'B' && vin[2] == 'W');
+    if (ehVW) {
+      fuel_metodo = 2;
+      Serial.println("[Fuel] metodo = VW Mode22 (painel, DID 2206)");
+      return;
+    }
+  }
+  fuel_metodo = 3;
+  Serial.println("[Fuel] metodo = indisponivel");
+}
+
+int lerCombustivelPct() {
+  if (fuel_metodo == 1) {
+    uint8_t d[8], len;
+    if (obdRequest(0x2F, d, &len)) {
+      if (d[0] == 0xFF) return -1;
+      return (d[0] * 100) / 255;
+    }
+    return -1;
+  }
+  if (fuel_metodo == 2) {
+    uint8_t d[8];
+    int n = lerDID22(VW_CLUSTER_REQ, VW_DID_FUEL, d, sizeof(d));
+    if (n >= 1) {
+      int litros = d[0];
+      int pct = (litros * 100) / TANQUE_VW_L;
+      if (pct > 100) pct = 100;
+      return pct;
+    }
+    return -1;
+  }
+  return -1;
+}
+
+void probeFuel2F() {
+  uint8_t d[8], len;
+  flushCAN();
+  Serial.print("\n[FUEL] PID 0x2F bruto: ");
+  if (obdRequest(0x2F, d, &len)) {
+    Serial.printf("len=%u A=%u (0x%02X) -> %d%%", len, d[0], d[0], (d[0]*100)/255);
+    if (d[0] == 0xFF) Serial.print("   >>> 0xFF = carro NAO entrega combustivel nesse PID");
+    Serial.println();
+  } else Serial.println("sem resposta");
+}
+
+void probeM22(uint16_t did, bool soPositivo) {
+  flushCAN();
+  twai_message_t tx = {};
+  tx.identifier = probe_reqid; tx.data_length_code = 8;
+  tx.data[0] = 0x03; tx.data[1] = 0x22;
+  tx.data[2] = (did >> 8) & 0xFF; tx.data[3] = did & 0xFF;
+  for (int i = 4; i < 8; i++) tx.data[i] = 0x00;
+  if (twai_transmit(&tx, pdMS_TO_TICKS(100)) != ESP_OK) {
+    if (!soPositivo) Serial.printf("DID %04X: TX falhou\n", did);
+    return;
+  }
+  tx_ok++;
+  uint32_t janela = soPositivo ? 120 : 700;
+  uint32_t t0 = millis();
+  bool achou = false;
+  while (millis() - t0 < janela) {
+    twai_message_t rx;
+    if (twai_receive(&rx, pdMS_TO_TICKS(60)) != ESP_OK) continue;
+    if (rx.identifier < 0x700 || rx.identifier > 0x7FF) continue;
+    rx_ok++;
+    uint8_t pci = rx.data[0] & 0xF0;
+    bool positivo = (rx.data[1] == 0x62) || (pci == 0x10 && rx.data[2] == 0x62);
+    bool negativo = (rx.data[1] == 0x7F && rx.data[2] == 0x22);
+    if (!positivo && !negativo) continue;
+    if (soPositivo && negativo) break;
+    achou = true;
+    Serial.printf("DID %04X <- ID %03X: %02X %02X %02X %02X %02X %02X %02X %02X",
+                  did, rx.identifier, rx.data[0], rx.data[1], rx.data[2], rx.data[3],
+                  rx.data[4], rx.data[5], rx.data[6], rx.data[7]);
+    if (negativo) Serial.print("   (resposta negativa)");
+    Serial.println();
+    if (pci == 0x10) {
+      twai_message_t fc = {};
+      fc.identifier = probe_reqid; fc.data_length_code = 8;
+      fc.data[0] = 0x30; fc.data[1] = 0x00; fc.data[2] = 0x00;
+      for (int i = 3; i < 8; i++) fc.data[i] = 0x00;
+      twai_transmit(&fc, pdMS_TO_TICKS(50));
+    }
+    if (soPositivo) break;
+  }
+  if (!achou && !soPositivo)
+    Serial.printf("DID %04X: sem resposta no ID %03X\n", did, probe_reqid);
+}
+
+void runProbeM22() {
+  if (probe_did_ini == probe_did_fim) {
+    Serial.printf("\n[M22] DID %04X em ID %03X:\n", probe_did_ini, probe_reqid);
+    probeM22(probe_did_ini, false);
+    Serial.println("[M22] fim\n");
+  } else {
+    Serial.printf("\n[SWEEP22] %04X..%04X em ID %03X (so respostas):\n", probe_did_ini, probe_did_fim, probe_reqid);
+    for (uint32_t d = probe_did_ini; d <= probe_did_fim; d++) {
+      probeM22((uint16_t)d, true);
+      vTaskDelay(pdMS_TO_TICKS(15));
+    }
+    Serial.println("[SWEEP22] fim\n");
+  }
+}
+
+// ============================================================
+//  STANDBY (substitui o deep sleep)
+// ============================================================
+bool canAtivo(uint16_t ms) {
+  uint32_t t0 = millis();
+  while (millis() - t0 < ms) {
+    twai_message_t rx;
+    if (twai_receive(&rx, pdMS_TO_TICKS(50)) == ESP_OK) return true;
+  }
+  return false;
+}
+
+void entrarEmStandby() {
+  Serial.println("[STANDBY] entrando (carro desligado)");
+  salvarHodometro();   // garante km + tempo de motor gravados antes de dormir
+  twai_stop();
+  twai_driver_uninstall();
+  contando_pra_sleep = false;
+  estadoAtual = STANDBY;
+}
+
+void acordarDoStandby() {
+  Serial.println("[STANDBY] tensao alta sustentada -> acordando");
+  instalarCAN(obd_baud);
+  pagina_atual = 0; pagina_anterior = 255;   // forca redesenho do dashboard
+  inicio_rpm_baixo = millis(); contando_pra_sleep = false;
+  estadoAtual = OPERANDO;
+}
+
+void acordarManual() {
+  Serial.println("[STANDBY] acordado pelo botao MENU");
+  instalarCAN(obd_baud);
+  pagina_atual = 0; pagina_anterior = 255;
+  inicio_rpm_baixo = millis(); contando_pra_sleep = false;
+  estadoAtual = OPERANDO;
+}
+
+// Sondagem rapida: instala o CAN, pergunta RPM e desinstala. true = motor rodando.
+bool motorRodandoProbe() {
+  if (!instalarCAN(obd_baud)) return false;
+  vTaskDelay(pdMS_TO_TICKS(50));
+  int rpm = PID_ERRO;
+  for (int i = 0; i < 2 && rpm <= 0; i++) rpm = lerPID_int(0x0C, f_rpm);
+  twai_stop(); twai_driver_uninstall();
+  return rpm > 0;
+}
+
+void loopStandby() {
+  if (pedido_acordar) { pedido_acordar = false; acordarManual(); return; }
+  float tensao = lerTensaoADC();   // GPIO36, sempre ativo
+  static uint8_t alta = 0;
+  static float v_min = 99;
+  static uint32_t ult_probe = 0;
+  if (tensao > 0 && tensao < v_min) v_min = tensao;
+  if (tensao > TENSAO_WAKE) {
+    if (++alta >= 3) { alta = 0; v_min = 99; acordarDoStandby(); return; }  // ~1,5s acima de 13V = alternador
+  } else {
+    alta = 0;
+    bool degrau    = (v_min < 90) && (tensao - v_min >= 0.4f);
+    bool periodica = (millis() - ult_probe > 60000UL) && tensao >= 12.0f;
+    if (degrau || periodica) {
+      ult_probe = millis();
+      if (motorRodandoProbe()) { v_min = 99; acordarDoStandby(); return; }
+    }
+  }
+  vTaskDelay(pdMS_TO_TICKS(500));  // checa a cada 0,5s
+}
+
+// ============================================================
+//  Task CAN
+// ============================================================
+void taskCAN(void* param) {
+  Serial.println("[Task CAN] v2 iniciada");
+  debugLog(0, "Task CAN start");
+  auto contaPIDs = []() { int n = 0; for (int i = 1; i < 256; i++) if (pid_suportado[i]) n++; return n; };
+  descobrirPIDs();
+  uint32_t ultimo_calculo_odo = millis();
+  uint32_t ciclo = 0;
+  uint32_t ultima_redescoberta = millis();
+  static DadosCarro ultimo = {PID_ERRO, PID_ERRO, PID_ERRO, PID_ERRO, PID_ERRO, PID_ERRO, PID_ERRO, PID_ERRO, PID_ERRO, PID_ERRO, PID_ERRO, -1.0};
+  for (;;) {
+    // ===== STANDBY: so monitora tensao/botao, CAN desligado =====
+    if (estadoAtual == STANDBY) { loopStandby(); continue; }
+
+    if (contaPIDs() == 0 && (millis() - ultima_redescoberta > 3000)) {
+      ultima_redescoberta = millis();
+      Serial.println("[CAN] Nenhum PID ainda, re-descobrindo...");
+      descobrirPIDs();
+    }
+    if (fuel_metodo == 0 && contaPIDs() > 0) {
+      detectarMetodoCombustivel();
+    }
+    twai_status_info_t status;
+    if (twai_get_status_info(&status) == ESP_OK) {
+      if (status.state == TWAI_STATE_BUS_OFF) {
+        Serial.println("[CAN] BUS-OFF! recuperando...");
+        debugLog(2, "CAN BUS-OFF", status.tx_error_counter, status.rx_error_counter);
+        twai_initiate_recovery();
+        vTaskDelay(pdMS_TO_TICKS(200));
+      }
+      if (status.state == TWAI_STATE_STOPPED) {
+        Serial.println("[CAN] STOPPED, reiniciando...");
+        debugLog(1, "CAN STOPPED");
+        twai_start();
+        vTaskDelay(pdMS_TO_TICKS(100));
+      }
+    }
+    int valor;
+    static int falhas_rpm = 0;  // leituras seguidas sem resposta
+    static uint32_t ult_resp_ok = millis();  // ultima resposta valida do CAN
+
+    // ===== RPM: gatilho de tudo. CORRECAO D =====
+    valor = lerPID_int(0x0C, f_rpm);
+    if (valor < 0) {                       // 1 retry rapido antes de contar falha (barramento cheio)
+      vTaskDelay(pdMS_TO_TICKS(15));
+      valor = lerPID_int(0x0C, f_rpm);
+    }
+    if (valor >= 0) { ultimo.rpm = valor; falhas_rpm = 0; ult_resp_ok = millis(); }
+    else if (++falhas_rpm >= 5) {
+      // So considera "motor desligado" (zera RPM/vel -> tela volta p/ BATERIA) se a TENSAO
+      // confirmar que o alternador parou. Com o carro ligado (tensao > 13V) uma sequencia de
+      // falhas e congestionamento do barramento: mantem a ultima leitura para a tela NAO parar.
+      if (ultimo.tensao > 0 && ultimo.tensao < TENSAO_WAKE) {
+        ultimo.rpm = 0; ultimo.velocidade = 0;
+      } else {
+        falhas_rpm = 5;   // trava o contador (nao estoura) e segura a ultima leitura
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(30));
+
+    valor = lerPID_int(0x0D, f_vel);  if (valor >= 0) { ultimo.velocidade = valor; ult_resp_ok = millis(); }  vTaskDelay(pdMS_TO_TICKS(30));
+    valor = lerPID_int(0x05, f_temp); if (valor >= -40) ultimo.temp_motor = valor;  vTaskDelay(pdMS_TO_TICKS(30));
+    float v_tensao = lerPID_float(0x42, f_tensao);
+    if (v_tensao < 0) v_tensao = lerTensaoADC();
+    if (v_tensao >= 0) ultimo.tensao = v_tensao;
+    vTaskDelay(pdMS_TO_TICKS(30));
+    if ((ciclo % 4) == 0) {
+      valor = lerCombustivelPct(); if (valor >= 0) ultimo.combust = valor; vTaskDelay(pdMS_TO_TICKS(30));
+    }
+    if (xSemaphoreTake(mutex_dados, pdMS_TO_TICKS(50)) == pdTRUE) {
+      dados_publicos = ultimo;
+      xSemaphoreGive(mutex_dados);
+    }
+    // auto-recuperacao: so reinstala apos travamento LONGO real (15s sem resposta com motor ligado)
+    if (ultimo.tensao > TENSAO_WAKE && (millis() - ult_resp_ok) > 15000) {
+      Serial.println("[CAN] travado 15s -> reiniciando driver");
+      reiniciarCAN();
+      ult_resp_ok = millis();
+    }
+    if (diag_solicitar_leitura) {
+      diag_solicitar_leitura = false;
+      char dtcs_buf[MAX_DTCS][6];
+      int n = lerDTCs(dtcs_buf);
+      if (n < 0) { diag_num_dtcs = 0; }
+      else {
+        for (int i = 0; i < n; i++) memcpy(diag_dtcs[i], dtcs_buf[i], 6);
+        diag_num_dtcs = n;
+        diag_ultima_leitura = rtcNow().unixtime();
+      }
+      diag_estado = DIAG_ESTADO_RESULTADO;
+    }
+    if (diag_solicitar_apagar) {
+      diag_solicitar_apagar = false;
+      bool ok = apagarDTCs();
+      if (ok) { diag_num_dtcs = 0; diag_ultima_leitura = rtcNow().unixtime(); diag_estado = DIAG_ESTADO_APAGADO_OK; }
+      else { diag_estado = DIAG_ESTADO_MENU; }
+    }
+    if (probe_pedir_fuel) { probe_pedir_fuel = false; probeFuel2F(); }
+    if (probe_pedir_m22)  { probe_pedir_m22 = false;  runProbeM22(); }
+
+    // ===== Hodometro conta APENAS quando velocidade > 0 (nao RPM) =====
+    uint32_t agora = millis();
+    uint32_t delta_ms = agora - ultimo_calculo_odo;
+    if (delta_ms >= 1000) {
+      ultimo_calculo_odo = agora;
+      if (ultimo.rpm > 0) {  // tempo de motor ligado
+        static uint16_t seg_save = 0;
+        if (xSemaphoreTake(mutex_hodometro, pdMS_TO_TICKS(50)) == pdTRUE) {
+          segundos_motor_total++;
+          xSemaphoreGive(mutex_hodometro);
+        }
+        if (++seg_save >= 60) { seg_save = 0; salvarHodometro(); }  // persiste a cada 60s
+      }
+      if (ultimo.velocidade > 0) {
+        float seg = delta_ms / 1000.0;
+        float km100_inc = (ultimo.velocidade * seg * 100.0) / 3600.0 * km_cal;
+        static float km100_residual = 0;
+        km100_residual += km100_inc;
+        if (xSemaphoreTake(mutex_hodometro, pdMS_TO_TICKS(50)) == pdTRUE) {
+          if (km100_residual >= 1.0) {
+            uint32_t inteiro = (uint32_t)km100_residual;
+            km_acumulado_x100 += inteiro;
+            km100_residual -= inteiro;
+          }
+          if (km_acumulado_x100 >= 100) {
+            km_total_x100 += km_acumulado_x100; km_acumulado_x100 = 0;
+            xSemaphoreGive(mutex_hodometro);
+            salvarHodometro();
+          } else { xSemaphoreGive(mutex_hodometro); }
+        }
+      }
+    }
+    // ===== Entrada em standby: tensao baixa E motor parado (rpm 0), sustentado por 40s =====
+    if (ultimo.tensao > 0 && ultimo.tensao < TENSAO_WAKE && ultimo.rpm <= 0) {
+      if (!contando_pra_sleep) { contando_pra_sleep = true; inicio_rpm_baixo = millis(); }
+      else if (millis() - inicio_rpm_baixo >= TEMPO_STANDBY_MS) { entrarEmStandby(); continue; }
+    } else {
+      contando_pra_sleep = false;
+    }
+    ciclo++;
+    ultimo_heartbeat = millis();
+    vTaskDelay(pdMS_TO_TICKS(400));
+  }
+}
+
+// ============================================================
+//  Task Logger
+// ============================================================
+void taskLogger(void* param) {
+  Serial.println("[Task Logger] iniciada");
+  uint32_t ultimo_periodico = 0;
+  int rpm_anterior = -1, tps_anterior = -1;
+  uint32_t inicio_alto_rpm = 0;
+  bool alto_rpm_ativo = false;
+  vTaskDelay(pdMS_TO_TICKS(5000));
+  for (;;) {
+    DadosCarro d;
+    if (xSemaphoreTake(mutex_dados, pdMS_TO_TICKS(50)) == pdTRUE) { d = dados_publicos; xSemaphoreGive(mutex_dados); }
+    else { vTaskDelay(pdMS_TO_TICKS(500)); continue; }
+    uint32_t agora = millis();
+    bool gravou = false;
+    if (rpm_anterior >= 0 && rpm_anterior < 200 && d.rpm > 300) { gravarRegistro(1); gravou = true; }
+    if (!gravou && rpm_anterior > 300 && d.rpm >= 0 && d.rpm < 100) { gravarRegistro(2); gravou = true; }
+    if (d.rpm > 4000) {
+      if (!alto_rpm_ativo) { inicio_alto_rpm = agora; alto_rpm_ativo = true; }
+      else if (!gravou && agora - inicio_alto_rpm > 2000) { gravarRegistro(3); alto_rpm_ativo = false; gravou = true; }
+    } else { alto_rpm_ativo = false; }
+    if (!gravou && tps_anterior >= 0 && d.tps - tps_anterior > 50) { gravarRegistro(4); gravou = true; }
+    if (!gravou && d.tensao > 0 && d.tensao < 12.0) {
+      static uint32_t ult_alerta = 0;
+      if (agora - ult_alerta > 60000) { gravarRegistro(5); ult_alerta = agora; gravou = true; }
+    }
+    if (!gravou && d.temp_motor > 105) {
+      static uint32_t ult_temp = 0;
+      if (agora - ult_temp > 60000) { gravarRegistro(6); ult_temp = agora; gravou = true; }
+    }
+    if (!gravou && agora - ultimo_periodico > 30000) { gravarRegistro(0); ultimo_periodico = agora; }
+    rpm_anterior = d.rpm; tps_anterior = d.tps;
+    vTaskDelay(pdMS_TO_TICKS(500));
+  }
+}
+
+// ============================================================
+//  Task Alertas
+// ============================================================
+void taskAlertas(void* param) {
+  Serial.println("[Task Alertas] iniciada");
+  vTaskDelay(pdMS_TO_TICKS(5000));
+  uint32_t bat_baixa_desde = 0, alt_ruim_desde = 0;
+  for (;;) {
+    DadosCarro d;
+    if (xSemaphoreTake(mutex_dados, pdMS_TO_TICKS(50)) == pdTRUE) { d = dados_publicos; xSemaphoreGive(mutex_dados); }
+    else { vTaskDelay(pdMS_TO_TICKS(1000)); continue; }
+    uint32_t agora = millis();
+    bool ligado = (d.rpm > 0);
+    if (!ligado && d.tensao > 0 && d.tensao <= 12.0f) {
+      if (bat_baixa_desde == 0) bat_baixa_desde = agora;
+      else if (agora - bat_baixa_desde > 10000) {
+        if (!alerta_bateria_ativo) { alerta_bateria_ativo = true; debugLog(1, "BAT FRACA", (uint16_t)(d.tensao*10)); }
+      }
+    } else { bat_baixa_desde = 0; if (alerta_bateria_ativo) alerta_bateria_ativo = false; }
+    // CORRECAO C: sobrecarga do alternador a partir de 14.5V (era 15.0V)
+    if (ligado && d.tensao > 0 && (d.tensao <= 13.0f || d.tensao > 14.5f)) {
+      if (alt_ruim_desde == 0) alt_ruim_desde = agora;
+      else if (agora - alt_ruim_desde > 10000) {
+        if (!alerta_alternador_ativo) { alerta_alternador_ativo = true; debugLog(1, "ALT RUIM", (uint16_t)(d.tensao*10)); }
+      }
+    } else { alt_ruim_desde = 0; if (alerta_alternador_ativo) alerta_alternador_ativo = false; }
+    vTaskDelay(pdMS_TO_TICKS(1000));
+  }
+}
+
+// ============================================================
+//  Task RTC
+// ============================================================
+void taskRTC(void* param) {
+  Serial.println("[Task RTC] iniciada");
+  for (;;) {
+    DateTime agora = rtcNow();
+    if (xSemaphoreTake(mutex_hora, pdMS_TO_TICKS(50)) == pdTRUE) {
+      hora_h = agora.hour(); hora_m = agora.minute(); hora_s = agora.second();
+      data_dia = agora.day(); data_mes = agora.month(); data_ano = agora.year();
+      xSemaphoreGive(mutex_hora);
+    }
+    vTaskDelay(pdMS_TO_TICKS(500));
+  }
+}
+
+// ============================================================
+//  Task Heartbeat
+// ============================================================
+void taskHeartbeat(void* param) {
+  Serial.println("[Task Heartbeat] iniciada");
+  vTaskDelay(pdMS_TO_TICKS(30000));
+  for (;;) {
+    UBaseType_t can_stack = 0, tela_stack = 0;
+    TaskHandle_t h = xTaskGetHandle("CAN");  if (h) can_stack = uxTaskGetStackHighWaterMark(h);
+    h = xTaskGetHandle("Tela"); if (h) tela_stack = uxTaskGetStackHighWaterMark(h);
+    Serial.printf("[Beat] CAN=%u Tela=%u TX=%lu RX=%lu TO=%lu\n", can_stack, tela_stack, tx_ok, rx_ok, timeouts);
+    debugLog(4, "HEARTBEAT", can_stack, tela_stack);
+    vTaskDelay(pdMS_TO_TICKS(60000));
+  }
+}
+
+// ============================================================
+//  CAMADA DE TELA - LVGL + LovyanGFX (cockpit ligado nos dados reais)
+// ============================================================
+static const uint16_t LV_W = 320, LV_H = 240;
+static lv_disp_draw_buf_t draw_buf;
+static lv_color_t buf1[LV_W * 20];
+
+class LGFX : public lgfx::LGFX_Device {
+  lgfx::Panel_ST7789 _panel; lgfx::Bus_SPI _bus;
+public:
+  LGFX() {
+    { auto c = _bus.config();
+      c.spi_host = VSPI_HOST; c.spi_mode = 0;
+      c.freq_write = 40000000; c.freq_read = 16000000;
+      c.pin_sclk = 18; c.pin_mosi = 23; c.pin_miso = -1; c.pin_dc = 2;
+      c.dma_channel = 1; _bus.config(c); _panel.setBus(&_bus); }
+    { auto c = _panel.config();
+      c.pin_cs = 5; c.pin_rst = 4; c.pin_busy = -1;
+      c.panel_width = 240; c.panel_height = 320;
+      c.invert = true; c.rgb_order = false; _panel.config(c); }
+    setPanel(&_panel);
+  }
+};
+LGFX lcd;
+
+void my_disp_flush(lv_disp_drv_t* disp, const lv_area_t* area, lv_color_t* color_p) {
+  uint32_t w = area->x2 - area->x1 + 1, h = area->y2 - area->y1 + 1;
+  lcd.startWrite(); lcd.setAddrWindow(area->x1, area->y1, w, h);
+  lcd.pushPixels((uint16_t*)color_p, w * h, true);
+  lcd.endWrite(); lv_disp_flush_ready(disp);
+}
+
+// handles dos objetos do cockpit
+static lv_obj_t *gCockpit;
+static lv_obj_t *meter; static lv_meter_indicator_t *indArco;
+static lv_obj_t *lblVel, *lblRpm, *lblTemp, *lblData, *lblVoltTit, *lblVolt, *lblComb, *lblHora;
+static lv_obj_t *popup, *popupMsg, *popupIcon;
+static bool popup_shown = false;
+static bool pagina_montada_nova = false;
+static lv_obj_t *gManut, *manutSel, *manutNome[NUM_ITENS_MANUT], *manutPct[NUM_ITENS_MANUT];
+static lv_obj_t *manutBar[NUM_ITENS_MANUT], *manutIcon[NUM_ITENS_MANUT];
+static lv_obj_t *manutConfirm, *manutConfirmNome, *manutConfirmSim, *manutConfirmNao;
+static lv_obj_t *gDiag, *diagTit, *diagSel, *diagM[3], *diagMsg, *diagLista, *diagSim, *diagNao;
+static lv_obj_t *gAjuste, *ajTit, *ajCampo[6], *ajSalvar;
+static lv_obj_t *gSistema, *sisTit, *sisDist, *sisTempo;
+static lv_obj_t *sisConfirm, *sisConfirmSim, *sisConfirmNao;
+
+// resetCache: no-op no LVGL (a tela se redesenha sozinha); mantido p/ taskBotoes
+void resetCache() {}
+
+// ---------- Autoteste de boot (Serial apenas) ----------
+void autoteste() {
+  uint8_t probe[4] = {0};
+  bool eeprom_ok = eepromReadBytes(0, probe, 4);
+  float v = lerTensaoADC();
+  Serial.println("=== AUTOTESTE ===");
+  Serial.printf("  CAN....: %s\n", obd_ok ? "OK" : "FALHA");
+  Serial.printf("  RTC....: %s\n", rtc_ok ? "OK" : "FALHA");
+  Serial.printf("  EEPROM.: %s\n", eeprom_ok ? "OK" : "FALHA");
+  Serial.printf("  BATERIA: %.1fV\n", v);
+}
+
+// ---------- Monta o cockpit (estilo HUD) ----------
+void montarCockpit() {
+  lv_obj_t* scr = lv_scr_act();
+  lv_obj_set_style_bg_color(scr, lv_color_hex(0x05070D), 0);
+
+  gCockpit = lv_obj_create(scr);
+  lv_obj_set_size(gCockpit, LV_W, LV_H);
+  lv_obj_center(gCockpit);
+  lv_obj_set_style_bg_opa(gCockpit, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(gCockpit, 0, 0);
+  lv_obj_set_style_pad_all(gCockpit, 0, 0);
+  lv_obj_clear_flag(gCockpit, LV_OBJ_FLAG_SCROLLABLE);
+
+  meter = lv_meter_create(gCockpit);
+  lv_obj_set_size(meter, 184, 184);
+  lv_obj_align(meter, LV_ALIGN_LEFT_MID, 2, -14);
+  lv_obj_set_style_bg_opa(meter, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(meter, 0, 0);
+  lv_obj_set_style_pad_all(meter, 2, 0);
+  lv_meter_scale_t* escala = lv_meter_add_scale(meter);
+  lv_meter_set_scale_range(meter, escala, 0, 10, 270, 135);
+  lv_meter_set_scale_ticks(meter, escala, 51, 3, 15, lv_color_hex(0x33424F));
+  lv_meter_set_scale_major_ticks(meter, escala, 5, 4, 19, lv_color_hex(0xECEFF1), 12);
+  lv_meter_indicator_t* faixa =
+      lv_meter_add_scale_lines(meter, escala, lv_color_hex(0x00B0FF), lv_color_hex(0xFF1744), false, 0);
+  lv_meter_set_indicator_start_value(meter, faixa, 0);
+  lv_meter_set_indicator_end_value(meter, faixa, 10);
+  indArco = lv_meter_add_arc(meter, escala, 8, lv_color_hex(0xFFFFFF), -2);
+  lv_meter_set_indicator_start_value(meter, indArco, 0);
+  lv_meter_set_indicator_end_value(meter, indArco, 0);
+
+  lblVel = lv_label_create(gCockpit);
+  lv_label_set_text(lblVel, "0");
+  lv_obj_set_style_text_font(lblVel, &lv_font_montserrat_40, 0);
+  lv_obj_set_style_text_color(lblVel, lv_color_white(), 0);
+  lv_obj_set_width(lblVel, 176);
+  lv_obj_set_style_text_align(lblVel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align_to(lblVel, meter, LV_ALIGN_CENTER, 0, -8);
+  lv_obj_t* un = lv_label_create(gCockpit);
+  lv_label_set_text(un, "KM/H");
+  lv_obj_set_style_text_font(un, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(un, lv_color_hex(0x90A4AE), 0);
+  lv_obj_align_to(un, meter, LV_ALIGN_CENTER, 0, 20);
+  lv_obj_t* xr = lv_label_create(gCockpit);
+  lv_label_set_text(xr, "x1000 RPM");
+  lv_obj_set_style_text_font(xr, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(xr, lv_color_hex(0x455A64), 0);
+  lv_obj_align_to(xr, meter, LV_ALIGN_CENTER, 0, 38);
+
+  lblTemp = lv_label_create(gCockpit);
+  lv_label_set_text(lblTemp, "TEMP --C");
+  lv_obj_set_style_text_font(lblTemp, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(lblTemp, lv_color_hex(0x4CAF50), 0);
+  lv_obj_align(lblTemp, LV_ALIGN_BOTTOM_LEFT, 8, -22);
+  lblData = lv_label_create(gCockpit);
+  lv_label_set_text(lblData, "--/--/----");
+  lv_obj_set_style_text_font(lblData, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(lblData, lv_color_hex(0x90A4AE), 0);
+  lv_obj_align(lblData, LV_ALIGN_BOTTOM_LEFT, 8, -4);
+
+  lv_obj_t* divi = lv_obj_create(gCockpit);
+  lv_obj_set_size(divi, 2, 210);
+  lv_obj_align(divi, LV_ALIGN_LEFT_MID, 206, 0);
+  lv_obj_set_style_bg_color(divi, lv_color_hex(0x16202F), 0);
+  lv_obj_set_style_border_width(divi, 0, 0);
+
+  lblVoltTit = lv_label_create(gCockpit);
+  lv_label_set_text(lblVoltTit, LV_SYMBOL_BATTERY_FULL " BAT.");
+  lv_obj_set_style_text_font(lblVoltTit, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(lblVoltTit, lv_color_hex(0x78909C), 0);
+  lv_obj_align(lblVoltTit, LV_ALIGN_TOP_RIGHT, -8, 4);
+  lblVolt = lv_label_create(gCockpit);
+  lv_label_set_text(lblVolt, "--");
+  lv_obj_set_style_text_font(lblVolt, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(lblVolt, lv_color_white(), 0);
+  lv_obj_align(lblVolt, LV_ALIGN_TOP_RIGHT, -8, 20);
+
+  lv_obj_t* rt = lv_label_create(gCockpit);
+  lv_label_set_text(rt, "RPM");
+  lv_obj_set_style_text_font(rt, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(rt, lv_color_hex(0x78909C), 0);
+  lv_obj_align(rt, LV_ALIGN_TOP_RIGHT, -8, 54);
+  lblRpm = lv_label_create(gCockpit);
+  lv_label_set_text(lblRpm, "0");
+  lv_obj_set_style_text_font(lblRpm, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(lblRpm, lv_color_hex(0x00E5FF), 0);
+  lv_obj_align(lblRpm, LV_ALIGN_TOP_RIGHT, -8, 70);
+
+  lv_obj_t* ct = lv_label_create(gCockpit);
+  lv_label_set_text(ct, "COMBUSTIVEL");
+  lv_obj_set_style_text_font(ct, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(ct, lv_color_hex(0x78909C), 0);
+  lv_obj_align(ct, LV_ALIGN_TOP_RIGHT, -8, 104);
+  lblComb = lv_label_create(gCockpit);
+  lv_label_set_text(lblComb, "--");
+  lv_obj_set_style_text_font(lblComb, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(lblComb, lv_color_hex(0xFFC107), 0);
+  lv_obj_align(lblComb, LV_ALIGN_TOP_RIGHT, -8, 120);
+
+  lblHora = lv_label_create(gCockpit);
+  lv_label_set_text(lblHora, "--:--");
+  lv_obj_set_style_text_font(lblHora, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(lblHora, lv_color_hex(0xB0BEC5), 0);
+  lv_obj_align(lblHora, LV_ALIGN_BOTTOM_RIGHT, -8, -6);
+
+  popup = lv_obj_create(scr);
+  lv_obj_set_size(popup, 292, 92);
+  lv_obj_center(popup);
+  lv_obj_set_style_bg_color(popup, lv_color_hex(0x1A0707), 0);
+  lv_obj_set_style_border_color(popup, lv_color_hex(0xFF1744), 0);
+  lv_obj_set_style_border_width(popup, 3, 0);
+  lv_obj_set_style_radius(popup, 10, 0);
+  lv_obj_clear_flag(popup, LV_OBJ_FLAG_SCROLLABLE);
+  popupIcon = lv_label_create(popup);
+  lv_label_set_text(popupIcon, LV_SYMBOL_WARNING);
+  lv_obj_set_style_text_font(popupIcon, &lv_font_montserrat_40, 0);
+  lv_obj_set_style_text_color(popupIcon, lv_color_hex(0xFF1744), 0);
+  lv_obj_align(popupIcon, LV_ALIGN_LEFT_MID, 4, 0);
+  popupMsg = lv_label_create(popup);
+  lv_label_set_text(popupMsg, "ALERTA");
+  lv_obj_set_style_text_font(popupMsg, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(popupMsg, lv_color_hex(0xFF5252), 0);
+  lv_obj_align(popupMsg, LV_ALIGN_RIGHT_MID, -6, 0);
+  lv_obj_add_flag(popup, LV_OBJ_FLAG_HIDDEN);
+}
+
+// ---------- Atualiza o cockpit com dados REAIS ----------
+void atualizarCockpit(DadosCarro &d) {
+  static int t = 0, blinkT = 0; static bool blink = false;
+  static int alertIdx = 0, alertCnt = 0;
+  static char alerts[6][20];
+  static int last_arc = -1, last_band = -1, last_alertIdx = -1;
+
+  if (pagina_montada_nova) {
+    last_arc = -1; last_band = -1; last_alertIdx = -1; alertCnt = 0; popup_shown = false;
+    pagina_montada_nova = false;
+  }
+
+  int rpm = d.rpm > 0 ? d.rpm : 0;
+  int vel = d.velocidade > 0 ? d.velocidade : 0;
+  bool ligado = (rpm > 0);
+
+  char b[24];
+  snprintf(b, sizeof(b), "%d", vel);  lv_label_set_text(lblVel, b);
+  snprintf(b, sizeof(b), "%d", rpm);  lv_label_set_text(lblRpm, b);
+
+  int arc = rpm / 1000;
+  if (arc != last_arc) { lv_meter_set_indicator_end_value(meter, indArco, arc); last_arc = arc; }
+
+  if (d.temp_motor > -40) {
+    snprintf(b, sizeof(b), "TEMP %dC", d.temp_motor); lv_label_set_text(lblTemp, b);
+    int band = d.temp_motor > 100 ? 1 : 0;
+    if (band != last_band) {
+      lv_obj_set_style_text_color(lblTemp, band ? lv_color_hex(0xFF9800) : lv_color_hex(0x4CAF50), 0);
+      last_band = band;
+    }
+  }
+
+  lv_label_set_text(lblVoltTit, ligado ? (LV_SYMBOL_CHARGE " ALTERN.") : (LV_SYMBOL_BATTERY_FULL " BAT."));
+  if (d.tensao > 0) { snprintf(b, sizeof(b), "%.1fV", d.tensao); lv_label_set_text(lblVolt, b); }
+
+  if (d.combust >= 0) { snprintf(b, sizeof(b), "%d%%", d.combust); lv_label_set_text(lblComb, b); }
+  else lv_label_set_text(lblComb, "--");
+
+  t++;
+  if (t % 60 == 0) {
+    DateTime now = rtcNow();
+    snprintf(b, sizeof(b), "%02d:%02d", now.hour(), now.minute()); lv_label_set_text(lblHora, b);
+    snprintf(b, sizeof(b), "%02d/%02d/%04d", now.day(), now.month(), now.year()); lv_label_set_text(lblData, b);
+
+    alertCnt = 0;
+    uint32_t km = (km_total_x100 + km_acumulado_x100) / 100;
+    uint32_t ts = now.unixtime();
+    if (d.temp_motor > 110) snprintf(alerts[alertCnt++], 20, "TEMP ALTA");
+    if (hora_nao_ajustada) snprintf(alerts[alertCnt++], 20, "AJUSTAR HORA");
+    // alertas de tensao: condicao tem que persistir alguns segundos para aparecer (evita falso alarme)
+    {
+      static uint32_t t_alt = 0, t_sob = 0, t_bat = 0;
+      uint32_t agora = millis();
+      bool c_alt = ligado && d.tensao > 0 && d.tensao <= 13.0f;
+      // CORRECAO C: SOBRECARGA com tensao ACIMA de 14.5V (era 15.0V)
+      bool c_sob = ligado && d.tensao > 14.5f;
+      bool c_bat = !ligado && d.tensao > 0 && d.tensao <= 12.0f;
+      if (c_alt) { if (t_alt == 0) t_alt = agora; } else t_alt = 0;
+      if (c_sob) { if (t_sob == 0) t_sob = agora; } else t_sob = 0;
+      if (c_bat) { if (t_bat == 0) t_bat = agora; } else t_bat = 0;
+      if (t_alt && agora - t_alt >= 4000) snprintf(alerts[alertCnt++], 20, "ALTERNADOR");
+      // CORRECAO C: SOBRECARGA dispara apos mais de 3s sustentados (era 4s)
+      if (t_sob && agora - t_sob >= 3000) snprintf(alerts[alertCnt++], 20, "SOBRECARGA");
+      if (t_bat && agora - t_bat >= 4000) snprintf(alerts[alertCnt++], 20, "BATERIA FRACA");
+    }
+    for (int i = 0; i < NUM_ITENS_MANUT && alertCnt < 6; i++)
+      if (itemVencido(i, km, ts)) snprintf(alerts[alertCnt++], 20, "TROCAR %s", NOMES_ITENS[i]);
+    if (alertCnt > 0) alertIdx = alertIdx % alertCnt; else alertIdx = 0;
+  }
+  if (alertCnt > 1 && t % 130 == 0) alertIdx = (alertIdx + 1) % alertCnt;
+
+  blinkT++;
+  bool blink_changed = false;
+  if (blinkT % 33 == 0) { blink = !blink; blink_changed = true; }
+
+  if (alertCnt == 0) {
+    if (popup_shown) { lv_obj_add_flag(popup, LV_OBJ_FLAG_HIDDEN); popup_shown = false; }
+  } else {
+    if (!popup_shown) { lv_obj_clear_flag(popup, LV_OBJ_FLAG_HIDDEN); popup_shown = true; blink_changed = true; last_alertIdx = -1; }
+    if (alertIdx != last_alertIdx) { lv_label_set_text(popupMsg, alerts[alertIdx]); last_alertIdx = alertIdx; }
+    if (blink_changed) {
+      lv_color_t forte = blink ? lv_color_hex(0xFF1744) : lv_color_hex(0x5A1414);
+      lv_color_t txt   = blink ? lv_color_hex(0xFF6B6B) : lv_color_hex(0x7A2A2A);
+      lv_obj_set_style_border_color(popup, forte, 0);
+      lv_obj_set_style_text_color(popupIcon, forte, 0);
+      lv_obj_set_style_text_color(popupMsg, txt, 0);
+    }
+  }
+}
+
+// ============================================================
+//  Pagina de Manutencao (LVGL)
+// ============================================================
+void montarManut() {
+  lv_obj_t* scr = lv_scr_act();
+  gManut = lv_obj_create(scr);
+  lv_obj_set_size(gManut, LV_W, LV_H);
+  lv_obj_center(gManut);
+  lv_obj_set_style_bg_color(gManut, lv_color_hex(0x05070D), 0);
+  lv_obj_set_style_border_width(gManut, 0, 0);
+  lv_obj_set_style_pad_all(gManut, 0, 0);
+  lv_obj_clear_flag(gManut, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t* tit = lv_label_create(gManut);
+  lv_label_set_text(tit, "MANUTENCAO");
+  lv_obj_set_style_text_font(tit, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(tit, lv_color_hex(0x4DD0E1), 0);
+  lv_obj_align(tit, LV_ALIGN_TOP_MID, 0, 5);
+
+  manutSel = lv_obj_create(gManut);
+  lv_obj_set_size(manutSel, 308, 38);
+  lv_obj_set_style_bg_color(manutSel, lv_color_hex(0x16263A), 0);
+  lv_obj_set_style_bg_opa(manutSel, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_color(manutSel, lv_color_hex(0x00E5FF), 0);
+  lv_obj_set_style_border_width(manutSel, 2, 0);
+  lv_obj_set_style_radius(manutSel, 6, 0);
+  lv_obj_clear_flag(manutSel, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_pos(manutSel, 6, 28);
+
+  for (int i = 0; i < NUM_ITENS_MANUT; i++) {
+    int y = 28 + i * 40;
+    manutIcon[i] = lv_img_create(gManut);
+    lv_img_set_src(manutIcon[i], ICONES_MANUT[i]);
+    lv_obj_set_style_img_recolor(manutIcon[i], lv_color_hex(0x00B0FF), 0);
+    lv_obj_set_style_img_recolor_opa(manutIcon[i], LV_OPA_COVER, 0);
+    lv_obj_set_pos(manutIcon[i], 8, y + 4);
+
+    manutNome[i] = lv_label_create(gManut);
+    lv_label_set_text(manutNome[i], NOMES_ITENS[i]);
+    lv_obj_set_style_text_font(manutNome[i], &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(manutNome[i], lv_color_hex(0x00B0FF), 0);
+    lv_obj_set_pos(manutNome[i], 48, y + 2);
+
+    manutPct[i] = lv_label_create(gManut);
+    lv_label_set_text(manutPct[i], "--");
+    lv_obj_set_style_text_font(manutPct[i], &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(manutPct[i], lv_color_hex(0x00B0FF), 0);
+    lv_obj_align(manutPct[i], LV_ALIGN_TOP_RIGHT, -12, y + 6);
+
+    manutBar[i] = lv_bar_create(gManut);
+    lv_obj_set_size(manutBar[i], 208, 5);
+    lv_obj_set_pos(manutBar[i], 48, y + 31);
+    lv_bar_set_range(manutBar[i], 0, 100);
+    lv_bar_set_value(manutBar[i], 0, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(manutBar[i], lv_color_hex(0x16263A), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(manutBar[i], LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(manutBar[i], 2, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(manutBar[i], lv_color_hex(0x00B0FF), LV_PART_INDICATOR);
+    lv_obj_set_style_radius(manutBar[i], 2, LV_PART_INDICATOR);
+  }
+
+  manutConfirm = lv_obj_create(gManut);
+  lv_obj_set_size(manutConfirm, 280, 100);
+  lv_obj_center(manutConfirm);
+  lv_obj_set_style_bg_color(manutConfirm, lv_color_hex(0x0A1420), 0);
+  lv_obj_set_style_bg_opa(manutConfirm, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_color(manutConfirm, lv_color_hex(0x00E5FF), 0);
+  lv_obj_set_style_border_width(manutConfirm, 3, 0);
+  lv_obj_set_style_radius(manutConfirm, 10, 0);
+  lv_obj_clear_flag(manutConfirm, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t* cfTit = lv_label_create(manutConfirm);
+  lv_label_set_text(cfTit, "RESETAR?");
+  lv_obj_set_style_text_font(cfTit, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(cfTit, lv_color_white(), 0);
+  lv_obj_align(cfTit, LV_ALIGN_TOP_MID, 0, 4);
+
+  manutConfirmNome = lv_label_create(manutConfirm);
+  lv_label_set_text(manutConfirmNome, "");
+  lv_obj_set_style_text_font(manutConfirmNome, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(manutConfirmNome, lv_color_hex(0xB0BEC5), 0);
+  lv_obj_align(manutConfirmNome, LV_ALIGN_TOP_MID, 0, 36);
+
+  manutConfirmSim = lv_label_create(manutConfirm);
+  lv_label_set_text(manutConfirmSim, "SIM");
+  lv_obj_set_style_text_font(manutConfirmSim, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(manutConfirmSim, lv_color_hex(0x555E68), 0);
+  lv_obj_align(manutConfirmSim, LV_ALIGN_BOTTOM_LEFT, 30, -6);
+
+  manutConfirmNao = lv_label_create(manutConfirm);
+  lv_label_set_text(manutConfirmNao, "NAO");
+  lv_obj_set_style_text_font(manutConfirmNao, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(manutConfirmNao, lv_color_hex(0x00E5FF), 0);
+  lv_obj_align(manutConfirmNao, LV_ALIGN_BOTTOM_RIGHT, -30, -6);
+
+  lv_obj_add_flag(manutConfirm, LV_OBJ_FLAG_HIDDEN);
+}
+
+void atualizarManut() {
+  static int last_pct[NUM_ITENS_MANUT] = { -1, -1, -1, -1, -1 };
+  static int last_sel = -1;
+  static uint32_t prox = 0;
+  static bool last_confirm = false;
+  static int last_csel = -1;
+
+  if (pagina_montada_nova) {
+    for (int i = 0; i < NUM_ITENS_MANUT; i++) last_pct[i] = -1;
+    last_sel = -1; prox = 0;
+    last_confirm = false; last_csel = -1;
+    manut_confirma_reset = false;
+    pagina_montada_nova = false;
+  }
+
+  uint32_t agora = millis();
+  if (agora >= prox) {
+    prox = agora + 500;
+    uint32_t km_atual = 0;
+    if (xSemaphoreTake(mutex_hodometro, pdMS_TO_TICKS(50)) == pdTRUE) {
+      km_atual = (km_total_x100 + km_acumulado_x100) / 100; xSemaphoreGive(mutex_hodometro);
+    }
+    uint32_t ts_atual = rtcNow().unixtime();
+    for (int i = 0; i < NUM_ITENS_MANUT; i++) {
+      uint16_t pct = itemPercentual(i, km_atual, ts_atual);
+      if ((int)pct != last_pct[i]) {
+        bool vencido = itemVencido(i, km_atual, ts_atual);
+        lv_color_t cor = vencido ? lv_color_hex(0xFF1744)
+                                 : (pct >= 80 ? lv_color_hex(0xFFC107) : lv_color_hex(0x00B0FF));
+        lv_obj_set_style_text_color(manutNome[i], cor, 0);
+        lv_obj_set_style_img_recolor(manutIcon[i], cor, 0);
+        int pv = pct > 100 ? 100 : pct;
+        lv_bar_set_value(manutBar[i], pv, LV_ANIM_OFF);
+        lv_obj_set_style_bg_color(manutBar[i], cor, LV_PART_INDICATOR);
+        char pbuf[12];
+        if (vencido) snprintf(pbuf, sizeof(pbuf), "VENC.");
+        else         snprintf(pbuf, sizeof(pbuf), "%d%%", pct);
+        lv_label_set_text(manutPct[i], pbuf);
+        lv_obj_set_style_text_color(manutPct[i], cor, 0);
+        last_pct[i] = pct;
+      }
+    }
+  }
+
+  int sel = item_manut_selecionado; if (sel >= NUM_ITENS_MANUT) sel = 0;
+  if (sel != last_sel) { lv_obj_set_pos(manutSel, 6, 28 + sel * 40); last_sel = sel; }
+
+  bool cf = manut_confirma_reset;
+  if (cf != last_confirm) {
+    if (cf) {
+      lv_label_set_text(manutConfirmNome, NOMES_ITENS[sel]);
+      lv_obj_clear_flag(manutConfirm, LV_OBJ_FLAG_HIDDEN);
+    } else {
+      lv_obj_add_flag(manutConfirm, LV_OBJ_FLAG_HIDDEN);
+    }
+    last_confirm = cf; last_csel = -1;
+  }
+  if (cf) {
+    int csel = manut_confirma_selecionado;
+    if (csel != last_csel) {
+      lv_color_t selCor = lv_color_hex(0x00E5FF), dimCor = lv_color_hex(0x555E68);
+      lv_obj_set_style_text_color(manutConfirmSim, csel == 0 ? selCor : dimCor, 0);
+      lv_obj_set_style_text_color(manutConfirmNao, csel == 1 ? selCor : dimCor, 0);
+      last_csel = csel;
+    }
+  }
+}
+
+// ============================================================
+//  Pagina de Diagnostico (LVGL)
+// ============================================================
+static inline void diagShow(lv_obj_t* o, bool vis) {
+  if (vis) lv_obj_clear_flag(o, LV_OBJ_FLAG_HIDDEN);
+  else     lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+}
+
+void montarDiag() {
+  lv_obj_t* scr = lv_scr_act();
+  gDiag = lv_obj_create(scr);
+  lv_obj_set_size(gDiag, LV_W, LV_H);
+  lv_obj_center(gDiag);
+  lv_obj_set_style_bg_color(gDiag, lv_color_hex(0x05070D), 0);
+  lv_obj_set_style_border_width(gDiag, 0, 0);
+  lv_obj_set_style_pad_all(gDiag, 0, 0);
+  lv_obj_clear_flag(gDiag, LV_OBJ_FLAG_SCROLLABLE);
+
+  diagTit = lv_label_create(gDiag);
+  lv_label_set_text(diagTit, "DIAGNOSTICO");
+  lv_obj_set_style_text_font(diagTit, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(diagTit, lv_color_hex(0x4DD0E1), 0);
+  lv_obj_align(diagTit, LV_ALIGN_TOP_MID, 0, 6);
+
+  diagSel = lv_obj_create(gDiag);
+  lv_obj_set_size(diagSel, 300, 44);
+  lv_obj_set_style_bg_color(diagSel, lv_color_hex(0x16263A), 0);
+  lv_obj_set_style_bg_opa(diagSel, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_color(diagSel, lv_color_hex(0x00E5FF), 0);
+  lv_obj_set_style_border_width(diagSel, 2, 0);
+  lv_obj_set_style_radius(diagSel, 6, 0);
+  lv_obj_clear_flag(diagSel, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_pos(diagSel, 10, 52);
+
+  const char* itens[] = { "Ler codigos", "Apagar codigos", "Voltar" };
+  for (int i = 0; i < 3; i++) {
+    diagM[i] = lv_label_create(gDiag);
+    lv_label_set_text(diagM[i], itens[i]);
+    lv_obj_set_style_text_font(diagM[i], &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(diagM[i], lv_color_white(), 0);
+    lv_obj_set_pos(diagM[i], 24, 58 + i * 52);
+  }
+
+  diagMsg = lv_label_create(gDiag);
+  lv_label_set_text(diagMsg, "");
+  lv_obj_set_style_text_font(diagMsg, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(diagMsg, lv_color_white(), 0);
+  lv_obj_align(diagMsg, LV_ALIGN_CENTER, 0, 0);
+  lv_obj_add_flag(diagMsg, LV_OBJ_FLAG_HIDDEN);
+
+  diagLista = lv_label_create(gDiag);
+  lv_label_set_text(diagLista, "");
+  lv_obj_set_style_text_font(diagLista, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(diagLista, lv_color_hex(0xFFC107), 0);
+  lv_label_set_long_mode(diagLista, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(diagLista, 296);
+  lv_obj_set_pos(diagLista, 12, 72);
+  lv_obj_add_flag(diagLista, LV_OBJ_FLAG_HIDDEN);
+
+  diagSim = lv_label_create(gDiag);
+  lv_label_set_text(diagSim, "SIM");
+  lv_obj_set_style_text_font(diagSim, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(diagSim, lv_color_hex(0x555E68), 0);
+  lv_obj_align(diagSim, LV_ALIGN_BOTTOM_LEFT, 40, -16);
+  lv_obj_add_flag(diagSim, LV_OBJ_FLAG_HIDDEN);
+
+  diagNao = lv_label_create(gDiag);
+  lv_label_set_text(diagNao, "NAO");
+  lv_obj_set_style_text_font(diagNao, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(diagNao, lv_color_hex(0x00E5FF), 0);
+  lv_obj_align(diagNao, LV_ALIGN_BOTTOM_RIGHT, -40, -16);
+  lv_obj_add_flag(diagNao, LV_OBJ_FLAG_HIDDEN);
+}
+
+void atualizarDiag() {
+  static int last_estado = -1, last_msel = -1, last_csel = -1, last_ndtc = -1;
+  if (pagina_montada_nova) {
+    diag_estado = DIAG_ESTADO_MENU; diag_menu_selecionado = 0;
+    last_estado = -1; last_msel = -1; last_csel = -1; last_ndtc = -1;
+    pagina_montada_nova = false;
+  }
+  int est = diag_estado;
+  bool refazer = (est != last_estado) ||
+                 (est == DIAG_ESTADO_RESULTADO && (int)diag_num_dtcs != last_ndtc);
+
+  if (refazer) {
+    bool isMenu = (est == DIAG_ESTADO_MENU);
+    bool isConf = (est == DIAG_ESTADO_CONFIRMAR);
+    bool isResu = (est == DIAG_ESTADO_RESULTADO);
+    diagShow(diagSel, isMenu);
+    for (int i = 0; i < 3; i++) diagShow(diagM[i], isMenu);
+    diagShow(diagSim, isConf);
+    diagShow(diagNao, isConf);
+    diagShow(diagLista, isResu && diag_num_dtcs > 0);
+    diagShow(diagMsg, !isMenu);
+
+    if (est == DIAG_ESTADO_LENDO) {
+      lv_label_set_text(diagMsg, "Lendo...");
+      lv_obj_set_style_text_color(diagMsg, lv_color_hex(0x4DD0E1), 0);
+      lv_obj_align(diagMsg, LV_ALIGN_CENTER, 0, 0);
+    } else if (est == DIAG_ESTADO_APAGANDO) {
+      lv_label_set_text(diagMsg, "Apagando...");
+      lv_obj_set_style_text_color(diagMsg, lv_color_hex(0x4DD0E1), 0);
+      lv_obj_align(diagMsg, LV_ALIGN_CENTER, 0, 0);
+    } else if (est == DIAG_ESTADO_APAGADO_OK) {
+      lv_label_set_text(diagMsg, LV_SYMBOL_OK " Apagado!");
+      lv_obj_set_style_text_color(diagMsg, lv_color_hex(0x4CAF50), 0);
+      lv_obj_align(diagMsg, LV_ALIGN_CENTER, 0, 0);
+    } else if (isConf) {
+      lv_label_set_text(diagMsg, "Apagar tudo?");
+      lv_obj_set_style_text_color(diagMsg, lv_color_hex(0xFF5252), 0);
+      lv_obj_align(diagMsg, LV_ALIGN_TOP_MID, 0, 50);
+    } else if (isResu) {
+      if (diag_num_dtcs == 0) {
+        lv_label_set_text(diagMsg, LV_SYMBOL_OK " Nenhum codigo");
+        lv_obj_set_style_text_color(diagMsg, lv_color_hex(0x4CAF50), 0);
+        lv_obj_align(diagMsg, LV_ALIGN_CENTER, 0, 0);
+      } else {
+        char buf[28];
+        snprintf(buf, sizeof(buf), LV_SYMBOL_WARNING " %d codigo(s)", diag_num_dtcs);
+        lv_label_set_text(diagMsg, buf);
+        lv_obj_set_style_text_color(diagMsg, lv_color_hex(0xFF5252), 0);
+        lv_obj_align(diagMsg, LV_ALIGN_TOP_MID, 0, 40);
+        char lista[MAX_DTCS * 40]; lista[0] = 0;
+        for (int i = 0; i < diag_num_dtcs && i < MAX_DTCS; i++) {
+          const char* desc = descricaoDTC(diag_dtcs[i]);
+          char linha[48];
+          if (desc) snprintf(linha, sizeof(linha), "%s  %s\n", diag_dtcs[i], desc);
+          else      snprintf(linha, sizeof(linha), "%s\n", diag_dtcs[i]);
+          strncat(lista, linha, sizeof(lista) - strlen(lista) - 1);
+        }
+        lv_label_set_text(diagLista, lista);
+      }
+    }
+    last_estado = est; last_ndtc = diag_num_dtcs; last_msel = -1; last_csel = -1;
+  }
+
+  if (est == DIAG_ESTADO_MENU) {
+    int s = diag_menu_selecionado; if (s > 2) s = 0;
+    if (s != last_msel) { lv_obj_set_pos(diagSel, 10, 52 + s * 52); last_msel = s; }
+  }
+  if (est == DIAG_ESTADO_CONFIRMAR) {
+    int c = diag_confirma_selecionado;
+    if (c != last_csel) {
+      lv_color_t sel = lv_color_hex(0x00E5FF), dim = lv_color_hex(0x555E68);
+      lv_obj_set_style_text_color(diagSim, c == 0 ? sel : dim, 0);
+      lv_obj_set_style_text_color(diagNao, c == 1 ? sel : dim, 0);
+      last_csel = c;
+    }
+  }
+}
+
+// ============================================================
+//  Pagina de Ajuste de Hora (LVGL)
+// ============================================================
+static lv_obj_t* ajNum(lv_obj_t* par, int x, int y, int w) {
+  lv_obj_t* l = lv_label_create(par);
+  lv_label_set_text(l, "00");
+  lv_obj_set_style_text_font(l, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(l, lv_color_white(), 0);
+  lv_obj_set_width(l, w);
+  lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_pos(l, x, y);
+  return l;
+}
+static void ajSep(lv_obj_t* par, const char* s, int x, int y) {
+  lv_obj_t* l = lv_label_create(par);
+  lv_label_set_text(l, s);
+  lv_obj_set_style_text_font(l, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(l, lv_color_hex(0x607D8B), 0);
+  lv_obj_set_pos(l, x, y);
+}
+
+void montarAjuste() {
+  lv_obj_t* scr = lv_scr_act();
+  gAjuste = lv_obj_create(scr);
+  lv_obj_set_size(gAjuste, LV_W, LV_H);
+  lv_obj_center(gAjuste);
+  lv_obj_set_style_bg_color(gAjuste, lv_color_hex(0x05070D), 0);
+  lv_obj_set_style_border_width(gAjuste, 0, 0);
+  lv_obj_set_style_pad_all(gAjuste, 0, 0);
+  lv_obj_clear_flag(gAjuste, LV_OBJ_FLAG_SCROLLABLE);
+
+  ajTit = lv_label_create(gAjuste);
+  lv_label_set_text(ajTit, "AJUSTE HORA");
+  lv_obj_set_style_text_font(ajTit, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(ajTit, lv_color_hex(0x4DD0E1), 0);
+  lv_obj_align(ajTit, LV_ALIGN_TOP_MID, 0, 8);
+
+  ajCampo[0] = ajNum(gAjuste, 60, 70, 40);   ajSep(gAjuste, "/", 104, 70);
+  ajCampo[1] = ajNum(gAjuste, 118, 70, 40);  ajSep(gAjuste, "/", 162, 70);
+  ajCampo[2] = ajNum(gAjuste, 178, 70, 78);
+
+  ajCampo[3] = ajNum(gAjuste, 80, 128, 40);  ajSep(gAjuste, ":", 124, 128);
+  ajCampo[4] = ajNum(gAjuste, 138, 128, 40); ajSep(gAjuste, ":", 182, 128);
+  ajCampo[5] = ajNum(gAjuste, 196, 128, 40);
+
+  ajSalvar = lv_label_create(gAjuste);
+  lv_label_set_text(ajSalvar, LV_SYMBOL_OK " SALVAR");
+  lv_obj_set_style_text_font(ajSalvar, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(ajSalvar, lv_color_hex(0x546E7A), 0);
+  lv_obj_align(ajSalvar, LV_ALIGN_BOTTOM_MID, 0, -18);
+}
+
+void atualizarAjuste() {
+  static int last_vals[6] = { -1, -1, -1, -1, -1, -1 };
+  static int last_estado = -1;
+  if (pagina_montada_nova) {
+    for (int i = 0; i < 6; i++) last_vals[i] = -1;
+    last_estado = -1; pagina_montada_nova = false;
+  }
+
+  int vals[6];
+  if (nav_modo == NAV_MODO_EDICAO) {
+    vals[0] = ajuste_dia; vals[1] = ajuste_mes; vals[2] = ajuste_ano;
+    vals[3] = ajuste_hora; vals[4] = ajuste_min; vals[5] = ajuste_seg;
+  } else {
+    if (xSemaphoreTake(mutex_hora, pdMS_TO_TICKS(50)) == pdTRUE) {
+      vals[0] = data_dia; vals[1] = data_mes; vals[2] = (int)data_ano - 2000;
+      vals[3] = hora_h; vals[4] = hora_m; vals[5] = hora_s;
+      xSemaphoreGive(mutex_hora);
+    } else {
+      for (int i = 0; i < 6; i++) vals[i] = last_vals[i];
+    }
+  }
+
+  for (int i = 0; i < 6; i++) {
+    if (vals[i] != last_vals[i]) {
+      char b[8];
+      if (i == 2) snprintf(b, sizeof(b), "20%02d", vals[i]);
+      else        snprintf(b, sizeof(b), "%02d", vals[i]);
+      lv_label_set_text(ajCampo[i], b);
+      last_vals[i] = vals[i];
+    }
+  }
+
+  int est = ajuste_estado;
+  if (est != last_estado) {
+    for (int i = 0; i < 6; i++) {
+      bool ativo = (est == AJUSTE_ESTADO_DIA + i);
+      lv_obj_set_style_text_color(ajCampo[i], ativo ? lv_color_hex(0x00E5FF) : lv_color_white(), 0);
+    }
+    lv_obj_set_style_text_color(ajSalvar,
+      est == AJUSTE_ESTADO_SALVAR ? lv_color_hex(0x00E5FF) : lv_color_hex(0x546E7A), 0);
+    last_estado = est;
+  }
+}
+
+// ============================================================
+//  Pagina Sistema (quilometragem + tempo de motor reais)
+// ============================================================
+void montarSistema() {
+  lv_obj_t* scr = lv_scr_act();
+  gSistema = lv_obj_create(scr);
+  lv_obj_set_size(gSistema, LV_W, LV_H);
+  lv_obj_center(gSistema);
+  lv_obj_set_style_bg_color(gSistema, lv_color_hex(0x05070D), 0);
+  lv_obj_set_style_border_width(gSistema, 0, 0);
+  lv_obj_set_style_pad_all(gSistema, 0, 0);
+  lv_obj_clear_flag(gSistema, LV_OBJ_FLAG_SCROLLABLE);
+
+  sisTit = lv_label_create(gSistema);
+  lv_label_set_text(sisTit, "SISTEMA");
+  lv_obj_set_style_text_font(sisTit, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(sisTit, lv_color_hex(0x4DD0E1), 0);
+  lv_obj_align(sisTit, LV_ALIGN_TOP_MID, 0, 8);
+
+  lv_obj_t* l1 = lv_label_create(gSistema);
+  lv_label_set_text(l1, "QUILOMETRAGEM");
+  lv_obj_set_style_text_font(l1, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(l1, lv_color_hex(0x78909C), 0);
+  lv_obj_set_pos(l1, 24, 60);
+
+  sisDist = lv_label_create(gSistema);
+  lv_label_set_text(sisDist, "0.0 km");
+  lv_obj_set_style_text_font(sisDist, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(sisDist, lv_color_white(), 0);
+  lv_obj_set_pos(sisDist, 24, 78);
+
+  lv_obj_t* l2 = lv_label_create(gSistema);
+  lv_label_set_text(l2, "TEMPO MOTOR");
+  lv_obj_set_style_text_font(l2, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(l2, lv_color_hex(0x78909C), 0);
+  lv_obj_set_pos(l2, 24, 130);
+
+  sisTempo = lv_label_create(gSistema);
+  lv_label_set_text(sisTempo, "0h 00m");
+  lv_obj_set_style_text_font(sisTempo, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(sisTempo, lv_color_white(), 0);
+  lv_obj_set_pos(sisTempo, 24, 148);
+
+  lv_obj_t* hint = lv_label_create(gSistema);
+  lv_label_set_text(hint, LV_SYMBOL_REFRESH " segure MENU p/ zerar");
+  lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(hint, lv_color_hex(0x546E7A), 0);
+  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -10);
+
+  sisConfirm = lv_obj_create(gSistema);
+  lv_obj_set_size(sisConfirm, 280, 100);
+  lv_obj_center(sisConfirm);
+  lv_obj_set_style_bg_color(sisConfirm, lv_color_hex(0x1A0707), 0);
+  lv_obj_set_style_bg_opa(sisConfirm, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_color(sisConfirm, lv_color_hex(0xFF1744), 0);
+  lv_obj_set_style_border_width(sisConfirm, 3, 0);
+  lv_obj_set_style_radius(sisConfirm, 10, 0);
+  lv_obj_clear_flag(sisConfirm, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t* cft = lv_label_create(sisConfirm);
+  lv_label_set_text(cft, "ZERAR TUDO?");
+  lv_obj_set_style_text_font(cft, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(cft, lv_color_white(), 0);
+  lv_obj_align(cft, LV_ALIGN_TOP_MID, 0, 8);
+
+  sisConfirmSim = lv_label_create(sisConfirm);
+  lv_label_set_text(sisConfirmSim, "SIM");
+  lv_obj_set_style_text_font(sisConfirmSim, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(sisConfirmSim, lv_color_hex(0x555E68), 0);
+  lv_obj_align(sisConfirmSim, LV_ALIGN_BOTTOM_LEFT, 30, -8);
+
+  sisConfirmNao = lv_label_create(sisConfirm);
+  lv_label_set_text(sisConfirmNao, "NAO");
+  lv_obj_set_style_text_font(sisConfirmNao, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(sisConfirmNao, lv_color_hex(0x00E5FF), 0);
+  lv_obj_align(sisConfirmNao, LV_ALIGN_BOTTOM_RIGHT, -30, -8);
+
+  lv_obj_add_flag(sisConfirm, LV_OBJ_FLAG_HIDDEN);
+}
+
+void atualizarSistema() {
+  static int last_km10 = -1;
+  static long last_min = -1;
+  static bool last_cf = false;
+  static int last_csel = -1;
+  if (pagina_montada_nova) {
+    last_km10 = -1; last_min = -1; last_cf = false; last_csel = -1;
+    sistema_confirma_zerar = false;
+    pagina_montada_nova = false;
+  }
+
+  uint32_t total = 0; long seg = 0;
+  if (xSemaphoreTake(mutex_hodometro, pdMS_TO_TICKS(50)) == pdTRUE) {
+    total = km_total_x100 + km_acumulado_x100;
+    seg   = (long)segundos_motor_total;
+    xSemaphoreGive(mutex_hodometro);
+  }
+
+  int km10 = total / 10;
+  if (km10 != last_km10) {
+    char b[16]; snprintf(b, sizeof(b), "%d.%d km", km10 / 10, km10 % 10);
+    lv_label_set_text(sisDist, b);
+    last_km10 = km10;
+  }
+
+  long minu = seg / 60;
+  if (minu != last_min) {
+    int h = minu / 60, m = minu % 60;
+    char b[16]; snprintf(b, sizeof(b), "%dh %02dm", h, m);
+    lv_label_set_text(sisTempo, b);
+    last_min = minu;
+  }
+
+  bool cf = sistema_confirma_zerar;
+  if (cf != last_cf) {
+    if (cf) lv_obj_clear_flag(sisConfirm, LV_OBJ_FLAG_HIDDEN);
+    else    lv_obj_add_flag(sisConfirm, LV_OBJ_FLAG_HIDDEN);
+    last_cf = cf; last_csel = -1;
+  }
+  if (cf) {
+    int c = sistema_confirma_selecionado;
+    if (c != last_csel) {
+      lv_color_t sel = lv_color_hex(0x00E5FF), dim = lv_color_hex(0x555E68);
+      lv_obj_set_style_text_color(sisConfirmSim, c == 0 ? sel : dim, 0);
+      lv_obj_set_style_text_color(sisConfirmNao, c == 1 ? sel : dim, 0);
+      last_csel = c;
+    }
+  }
+}
+
+// ---------- Paginas simples (placeholder) ----------
+void montarPlaceholder(const char* txt) {
+  lv_obj_t* scr = lv_scr_act();
+  lv_obj_t* l = lv_label_create(scr);
+  lv_label_set_text(l, txt);
+  lv_obj_set_style_text_font(l, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(l, lv_color_hex(0x4DD0E1), 0);
+  lv_obj_center(l);
+}
+
+// ---------- Monta SO a pagina ativa (economiza RAM do LVGL) ----------
+void construirPagina(uint8_t pag) {
+  lv_obj_clean(lv_scr_act());
+  lv_obj_set_style_bg_color(lv_scr_act(), lv_color_hex(0x05070D), 0);
+  if (pag == 0)      montarCockpit();
+  else if (pag == 1) montarDiag();
+  else if (pag == 2) montarSistema();
+  else if (pag == 3) montarManut();
+  else               montarAjuste();   // pag == 4
+  pagina_montada_nova = true;
+}
+
+// ============================================================
+//  Task Tela (LVGL)
+// ============================================================
+void taskTela(void* param) {
+  Serial.println("[Task Tela] LVGL iniciada");
+  lcd.init();
+  lcd.setRotation(1);
+  lv_init();
+  lv_disp_draw_buf_init(&draw_buf, buf1, NULL, LV_W * 20);
+  static lv_disp_drv_t dd;
+  lv_disp_drv_init(&dd);
+  dd.hor_res = LV_W; dd.ver_res = LV_H; dd.flush_cb = my_disp_flush; dd.draw_buf = &draw_buf;
+  lv_disp_drv_register(&dd);
+
+  uint8_t pagina_render = 255;
+  bool standby_ativo = false;
+  for (;;) {
+    hb_tela = millis();
+    if (estadoAtual == STANDBY) {
+      if (!standby_ativo) {
+        lv_obj_clean(lv_scr_act());
+        lv_obj_set_style_bg_color(lv_scr_act(), lv_color_black(), 0);
+        popup_shown = false;
+        standby_ativo = true;
+        pagina_render = 255;
+      }
+      lv_timer_handler();
+      vTaskDelay(pdMS_TO_TICKS(50));
+      continue;
+    }
+    standby_ativo = false;
+
+    DadosCarro d;
+    if (xSemaphoreTake(mutex_dados, pdMS_TO_TICKS(50)) == pdTRUE) { d = dados_publicos; xSemaphoreGive(mutex_dados); }
+
+    if (pagina_atual != pagina_render) {
+      construirPagina(pagina_atual);
+      pagina_render = pagina_atual;
+    }
+    if (pagina_atual == 0)      atualizarCockpit(d);
+    else if (pagina_atual == 1) atualizarDiag();
+    else if (pagina_atual == 2) atualizarSistema();
+    else if (pagina_atual == 3) atualizarManut();
+    else if (pagina_atual == 4) atualizarAjuste();
+
+    lv_timer_handler();
+    vTaskDelay(pdMS_TO_TICKS(15));
+  }
+}
+
+// ============================================================
+//  BLUETOOTH (BLE) - comandos do app (espelha comandos uteis)
+// ============================================================
+#define BLE_SVC_UUID "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
+#define BLE_RX_UUID  "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
+#define BLE_TX_UUID  "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
+BLECharacteristic* pBleTx = nullptr;
+
+String executarComandoApp(String cmd) {
+  cmd.trim();
+  String up = cmd; up.toUpperCase();
+
+  if (up == "STATUS") {
+    float v = lerTensaoADC();
+    uint32_t km = (km_total_x100 + km_acumulado_x100) / 100;
+    char b[128];
+    snprintf(b, sizeof(b), "km=%lu bat=%.1fV proto=%s/%dk estado=%s",
+             km, v, obd_extd ? "29b" : "11b", obd_baud,
+             (estadoAtual == STANDBY) ? "STANDBY" : "OPERANDO");
+    return String(b);
+  }
+  if (up == "MANUT LIST") {
+    uint32_t km = (km_total_x100 + km_acumulado_x100) / 100;
+    uint32_t ts = rtcNow().unixtime();
+    String r = "";
+    for (int i = 0; i < NUM_ITENS_MANUT; i++) {
+      r += String(i) + ":" + NOMES_ITENS[i] + " " + String(itemPercentual(i, km, ts)) + "%";
+      r += " int=" + String(itens_manut[i].km_intervalo) + "km";
+      if (itens_manut[i].dias_intervalo > 0) r += "/" + String(itens_manut[i].dias_intervalo) + "d";
+      r += "\n";
+    }
+    return r;
+  }
+  if (up.startsWith("MANUT RESET ")) {
+    int n = cmd.substring(12).toInt();
+    if (n < 0 || n >= NUM_ITENS_MANUT) return "ERRO: indice 0.." + String(NUM_ITENS_MANUT - 1);
+    resetarItem((uint8_t)n);
+    return String("OK: ") + NOMES_ITENS[n] + " resetado";
+  }
+  if (up.startsWith("MANUT KM ")) {
+    String args = cmd.substring(9); args.trim();
+    int sp = args.indexOf(' ');
+    if (sp < 0) return "Uso: MANUT KM <n> <km>";
+    int n = args.substring(0, sp).toInt();
+    uint32_t novoKm = (uint32_t) args.substring(sp + 1).toInt();
+    if (n < 0 || n >= NUM_ITENS_MANUT) return "ERRO: indice 0.." + String(NUM_ITENS_MANUT - 1);
+    if (novoKm < 100) return "ERRO: km muito baixo";
+    if (xSemaphoreTake(mutex_manut, pdMS_TO_TICKS(200)) != pdTRUE) return "ERRO: ocupado";
+    itens_manut[n].km_intervalo = novoKm;
+    xSemaphoreGive(mutex_manut);
+    salvarItensManutencao();
+    return String("OK: ") + NOMES_ITENS[n] + " intervalo = " + String(novoKm) + " km";
+  }
+  if (up.startsWith("MANUT DIAS ")) {
+    String args = cmd.substring(11); args.trim();
+    int sp = args.indexOf(' ');
+    if (sp < 0) return "Uso: MANUT DIAS <n> <dias>";
+    int n = args.substring(0, sp).toInt();
+    uint32_t dias = (uint32_t) args.substring(sp + 1).toInt();
+    if (n < 0 || n >= NUM_ITENS_MANUT) return "ERRO: indice 0.." + String(NUM_ITENS_MANUT - 1);
+    if (xSemaphoreTake(mutex_manut, pdMS_TO_TICKS(200)) != pdTRUE) return "ERRO: ocupado";
+    itens_manut[n].dias_intervalo = dias;
+    xSemaphoreGive(mutex_manut);
+    salvarItensManutencao();
+    return String("OK: ") + NOMES_ITENS[n] + " intervalo = " + String(dias) + " dias";
+  }
+  if (up == "ODORESET") { formatarHodometro(); return "OK: hodometro zerado"; }
+  return "Cmds: STATUS | MANUT LIST | MANUT RESET <n> | MANUT KM <n> <km> | MANUT DIAS <n> <dias> | ODORESET";
+}
+
+class BleRxCallback : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic* c) {
+    String cmd = String(c->getValue().c_str());
+    String resp = executarComandoApp(cmd);
+    if (pBleTx) { pBleTx->setValue(resp.c_str()); pBleTx->notify(); }
+    Serial.printf("[BLE] '%s' -> %s\n", cmd.c_str(), resp.c_str());
+  }
+};
+
+void initBLE() {
+  BLEDevice::init("MotorGuard");
+  BLEServer* srv = BLEDevice::createServer();
+  BLEService* svc = srv->createService(BLE_SVC_UUID);
+  pBleTx = svc->createCharacteristic(BLE_TX_UUID, BLECharacteristic::PROPERTY_NOTIFY);
+  pBleTx->addDescriptor(new BLE2902());
+  BLECharacteristic* rx = svc->createCharacteristic(BLE_RX_UUID, BLECharacteristic::PROPERTY_WRITE);
+  rx->setCallbacks(new BleRxCallback());
+  svc->start();
+  BLEAdvertising* adv = BLEDevice::getAdvertising();
+  adv->addServiceUUID(BLE_SVC_UUID);
+  adv->setScanResponse(true);
+  BLEDevice::startAdvertising();
+  Serial.println("[BLE] 'MotorGuard' anunciando (NUS)");
+}
+
+// ============================================================
+//  Setup
+// ============================================================
+void taskSerial(void* param);
+void taskBotoes(void* param);
+
+void setup() {
+  Serial.begin(115200);
+  delay(500);
+  analogSetPinAttenuation(PIN_VBAT, ADC_11db);
+  esp_reset_reason_t reset_reason = esp_reset_reason();
+  esp_sleep_wakeup_cause_t wake_cause = esp_sleep_get_wakeup_cause();
+  Serial.println("\n=== MOTOR GUARD v6.3 LVGL ===");
+  const char* reset_str[] = {"UNKNOWN","POWERON","EXT","SW","PANIC","INT_WDT","TASK_WDT","WDT","DEEPSLEEP","BROWNOUT","SDIO"};
+  Serial.printf("[Boot] reset_reason=%s wake=%d\n", (reset_reason < 11) ? reset_str[reset_reason] : "?", wake_cause);
+
+  mutex_dados = xSemaphoreCreateMutex();
+  mutex_hora = xSemaphoreCreateMutex();
+  mutex_hodometro = xSemaphoreCreateMutex();
+  mutex_manut = xSemaphoreCreateMutex();
+  mutex_debug = xSemaphoreCreateMutex();
+  mutex_i2c = xSemaphoreCreateMutex();
+
+  Wire.begin(21, 22);
+  Wire.setClock(100000);
+
+  if (!rtc.begin()) Serial.println("[ERRO] RTC");
+  else {
+    rtc_ok = true;
+    if (rtc.lostPower()) {
+      hora_nao_ajustada = true;
+      rtcAdjust(DateTime(2026, 1, 1, 0, 0, 0));
+      Serial.println("[RTC] sem hora valida -> 01/01/2026, exibindo AJUSTAR HORA");
+    }
+  }
+
+  if (!carregarDebugHeader()) { Serial.println("[Debug] log virgem, formatando..."); formatarDebugLog(); }
+  else Serial.printf("[Debug] log carregado: %u registros\n", debug_log_count);
+
+  debugLog(3, "BOOT", (uint16_t)reset_reason, (uint16_t)wake_cause, (uint8_t)reset_reason);
+
+  if (!carregarHeader()) { Serial.println("[Logger] EEPROM virgem/versao mudou, formatando..."); formatarEEPROM(); }
+  else Serial.printf("[Logger] count=%u total=%lu\n", log_count, log_total);
+
+  if (!carregarConfig()) { Serial.println("[Cfg] config virgem (voltcal=1.0 km_cal=1.0)"); salvarConfig(); }
+  else Serial.printf("[Cfg] voltcal=%.4f km_cal=%.4f\n", voltcal, km_cal);
+
+  if (!carregarHodometro()) formatarHodometro();
+  else Serial.printf("[Odo] %.2fkm %lus\n", km_total_x100/100.0, segundos_motor_total);
+
+  if (!carregarItensManutencao()) inicializarManutencao();
+
+  bool achou = detectarProtocoloOBD();
+  Serial.printf("[CAN] %s -> %s / %dk\n", achou ? "DETECTADO" : "default",
+                obd_extd ? "29-bit" : "11-bit", obd_baud);
+  delay(300);
+
+  autoteste();
+
+  dados_publicos = {PID_ERRO, PID_ERRO, PID_ERRO, PID_ERRO, PID_ERRO, PID_ERRO, PID_ERRO, PID_ERRO, PID_ERRO, PID_ERRO, PID_ERRO, -1.0};
+  ultimo_heartbeat = millis();
+
+  xTaskCreatePinnedToCore(taskCAN,       "CAN",    8192, NULL, 2, NULL, 0);
+  xTaskCreatePinnedToCore(taskLogger,    "Logger", 4096, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(taskAlertas,   "Alertas",4096, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(taskHeartbeat, "Heart",  4096, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(taskTela,      "Tela",   20480, NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(taskRTC,       "RTC",    4096, NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(taskSerial,    "Serial", 4096, NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(taskBotoes,    "Botoes", 4096, NULL, 2, NULL, 1);
+
+  // initBLE();   // TESTE: BLE desligado p/ confirmar falta de RAM (volta com NimBLE)
+  Serial.println("[TESTE] BLE desligado nesta build");
+  Serial.printf("[HEAP] livre apos setup = %u bytes\n", ESP.getFreeHeap());
+
+  debugLog(0, "Setup OK v63 LVGL");
+  Serial.println("=== MotorGuard v6.3 pronto ===");
+  Serial.println("Cmds: DUMP DEBUG FUEL VBAT | VOLTCAL <v> | KMCAL <real> <mostrado>");
+  Serial.println("Destrutivos (pedem SIM): RESET ODORESET MANUTRESET DEBUGRESET");
+}
+
+void loop() {
+  static uint32_t prox_log = 0;
+  uint32_t agora = millis();
+
+  if (agora - prox_log >= 30000) {
+    prox_log = agora;
+    Serial.printf("[HEAP] livre=%u min=%u | hb_tela=%lums hb_btn=%lums\n",
+                  ESP.getFreeHeap(), ESP.getMinFreeHeap(),
+                  agora - hb_tela, agora - hb_botoes);
+  }
+
+  if (agora > 20000) {
+    if ((agora - hb_tela > 12000) || (agora - hb_botoes > 12000)) {
+      Serial.printf("[WDT] travou (tela=%lums btn=%lums) -> reiniciando\n",
+                    agora - hb_tela, agora - hb_botoes);
+      delay(50);
+      ESP.restart();
+    }
+  }
+  vTaskDelay(pdMS_TO_TICKS(1000));
+}
+
+// ============================================================
+//  Tasks de entrada (botoes) e Serial
+// ============================================================
+void taskBotoes(void* param) {
+  Serial.println("[Task Botoes] iniciada");
+  pinMode(BTN_ANT, INPUT_PULLUP);
+  pinMode(BTN_MENU, INPUT_PULLUP);
+  pinMode(BTN_PRX, INPUT_PULLUP);
+  bool prev_ant = HIGH, prev_menu = HIGH, prev_prx = HIGH;
+  uint32_t ultimo_debounce = 0, ultimo_menu = 0, menu_pressionado_em = 0;
+  bool menu_longpress_disparado = false;
+  for (;;) {
+    hb_botoes = millis();
+    bool agora_ant = digitalRead(BTN_ANT);
+    bool agora_menu = digitalRead(BTN_MENU);
+    bool agora_prx = digitalRead(BTN_PRX);
+    uint32_t t = millis();
+
+    if (estadoAtual == STANDBY) {
+      if (prev_menu == HIGH && agora_menu == LOW) pedido_acordar = true;
+      prev_ant = agora_ant; prev_menu = agora_menu; prev_prx = agora_prx;
+      vTaskDelay(pdMS_TO_TICKS(50));
+      continue;
+    }
+    if (agora_ant == LOW || agora_menu == LOW || agora_prx == LOW) contando_pra_sleep = false;
+
+    if (prev_menu == HIGH && agora_menu == LOW) { menu_pressionado_em = t; menu_longpress_disparado = false; Serial.println("[BTN] MENU pressionado"); }
+    if (agora_menu == LOW && !menu_longpress_disparado && t - menu_pressionado_em >= LONGPRESS_MS) {
+      menu_longpress_disparado = true;
+      if (pagina_atual == 0 && nav_modo == NAV_MODO_VISUALIZACAO) {
+        pagina_atual = 4;
+      } else if (pagina_atual == 3 && nav_modo == NAV_MODO_EDICAO && !manut_confirma_reset) {
+        manut_confirma_reset = true;
+        manut_confirma_selecionado = 1;
+      } else if (pagina_atual == 4 && nav_modo == NAV_MODO_EDICAO) {
+        ajuste_estado = AJUSTE_ESTADO_MENU;
+        nav_modo = NAV_MODO_VISUALIZACAO;
+      } else if (pagina_atual == 2 && nav_modo == NAV_MODO_VISUALIZACAO && !sistema_confirma_zerar) {
+        sistema_confirma_zerar = true;
+        sistema_confirma_selecionado = 1;
+      }
+    }
+
+    if (prev_menu == LOW && agora_menu == HIGH) {
+      if (!menu_longpress_disparado && t - ultimo_menu > DEBOUNCE_MS) {
+        Serial.printf("[BTN] MENU OK (pag=%d, modo=%d)\n", pagina_atual, nav_modo);
+        if (manut_confirma_reset) {
+          if (manut_confirma_selecionado == 0) resetarItem(item_manut_selecionado);
+          manut_confirma_reset = false;
+        } else if (sistema_confirma_zerar) {
+          if (sistema_confirma_selecionado == 0) formatarHodometro();
+          sistema_confirma_zerar = false;
+        } else if (pagina_atual == 4 && nav_modo == NAV_MODO_EDICAO) {
+          if (ajuste_estado >= AJUSTE_ESTADO_DIA && ajuste_estado < AJUSTE_ESTADO_SEG) {
+            ajuste_estado++;
+          } else if (ajuste_estado == AJUSTE_ESTADO_SEG) {
+            ajuste_estado = AJUSTE_ESTADO_SALVAR;
+          } else if (ajuste_estado == AJUSTE_ESTADO_SALVAR) {
+            rtcAdjust(DateTime(2000 + ajuste_ano, ajuste_mes, ajuste_dia,
+                               ajuste_hora, ajuste_min, ajuste_seg));
+            hora_nao_ajustada = false;
+            ajuste_estado = AJUSTE_ESTADO_MENU;
+            nav_modo = NAV_MODO_VISUALIZACAO;
+          }
+        } else if (nav_modo == NAV_MODO_VISUALIZACAO) {
+          if (pagina_atual == 1) {
+            nav_modo = NAV_MODO_EDICAO;
+          } else if (pagina_atual == 3) {
+            nav_modo = NAV_MODO_EDICAO;
+            item_manut_selecionado = 0;
+            resetCache();
+          } else if (pagina_atual == 4) {
+            if (xSemaphoreTake(mutex_hora, pdMS_TO_TICKS(100)) == pdTRUE) {
+              ajuste_dia = data_dia; ajuste_mes = data_mes; ajuste_ano = (uint8_t)(data_ano - 2000);
+              ajuste_hora = hora_h; ajuste_min = hora_m; ajuste_seg = hora_s;
+              xSemaphoreGive(mutex_hora);
+            }
+            ajuste_estado = AJUSTE_ESTADO_DIA;
+            nav_modo = NAV_MODO_EDICAO;
+          } else if (pagina_atual == 2) {
+            pagina_atual = (pagina_atual + 1) % TOTAL_PAGINAS;
+          }
+        } else {
+          if (pagina_atual == 1) {
+            switch (diag_estado) {
+              case DIAG_ESTADO_MENU:
+                if (diag_menu_selecionado == 0) { diag_estado = DIAG_ESTADO_LENDO; diag_solicitar_leitura = true; }
+                else if (diag_menu_selecionado == 1) { diag_estado = DIAG_ESTADO_CONFIRMAR; diag_confirma_selecionado = 1; }
+                else { nav_modo = NAV_MODO_VISUALIZACAO; }
+                break;
+              case DIAG_ESTADO_RESULTADO: diag_estado = DIAG_ESTADO_MENU; break;
+              case DIAG_ESTADO_CONFIRMAR:
+                if (diag_confirma_selecionado == 0) { diag_estado = DIAG_ESTADO_APAGANDO; diag_solicitar_apagar = true; }
+                else diag_estado = DIAG_ESTADO_MENU;
+                break;
+              case DIAG_ESTADO_APAGADO_OK: diag_estado = DIAG_ESTADO_MENU; break;
+            }
+          } else if (pagina_atual == 3) {
+            nav_modo = NAV_MODO_VISUALIZACAO;
+          }
+        }
+        ultimo_menu = t;
+      }
+      menu_longpress_disparado = false;
+    }
+
+    if (t - ultimo_debounce > DEBOUNCE_MS) {
+      if (prev_ant == HIGH && agora_ant == LOW) {
+        if (sistema_confirma_zerar) {
+          sistema_confirma_selecionado = (sistema_confirma_selecionado == 0) ? 1 : 0;
+        } else if (pagina_atual == 4 && nav_modo == NAV_MODO_EDICAO) {
+          if (ajuste_estado >= AJUSTE_ESTADO_DIA && ajuste_estado <= AJUSTE_ESTADO_SEG) {
+            int idx = ajuste_estado - AJUSTE_ESTADO_DIA;
+            volatile uint8_t* valores[] = {&ajuste_dia, &ajuste_mes, &ajuste_ano, &ajuste_hora, &ajuste_min, &ajuste_seg};
+            uint8_t limites_min[] = {1, 1, 20, 0, 0, 0};
+            uint8_t limites_max[] = {31, 12, 99, 23, 59, 59};
+            if (*valores[idx] > limites_min[idx]) (*valores[idx])--;
+            else *valores[idx] = limites_max[idx];
+          }
+        } else if (nav_modo == NAV_MODO_EDICAO) {
+          if (pagina_atual == 3) {
+            if (manut_confirma_reset) {
+              manut_confirma_selecionado = (manut_confirma_selecionado == 0) ? 1 : 0;
+            } else {
+              if (item_manut_selecionado == 0) item_manut_selecionado = NUM_ITENS_MANUT - 1;
+              else item_manut_selecionado--;
+              resetCache();
+            }
+          } else if (pagina_atual == 1) {
+            if (diag_estado == DIAG_ESTADO_MENU) {
+              if (diag_menu_selecionado == 0) diag_menu_selecionado = 2;
+              else diag_menu_selecionado--;
+            } else if (diag_estado == DIAG_ESTADO_CONFIRMAR) {
+              diag_confirma_selecionado = (diag_confirma_selecionado == 0) ? 1 : 0;
+            }
+          }
+        } else {
+          if (pagina_atual == 0) pagina_atual = TOTAL_PAGINAS - 1;
+          else pagina_atual--;
+        }
+        ultimo_debounce = t;
+      }
+
+      if (prev_prx == HIGH && agora_prx == LOW) {
+        if (sistema_confirma_zerar) {
+          sistema_confirma_selecionado = (sistema_confirma_selecionado == 0) ? 1 : 0;
+        } else if (pagina_atual == 4 && nav_modo == NAV_MODO_EDICAO) {
+          if (ajuste_estado >= AJUSTE_ESTADO_DIA && ajuste_estado <= AJUSTE_ESTADO_SEG) {
+            int idx = ajuste_estado - AJUSTE_ESTADO_DIA;
+            volatile uint8_t* valores[] = {&ajuste_dia, &ajuste_mes, &ajuste_ano, &ajuste_hora, &ajuste_min, &ajuste_seg};
+            uint8_t limites_min[] = {1, 1, 20, 0, 0, 0};
+            uint8_t limites_max[] = {31, 12, 99, 23, 59, 59};
+            if (*valores[idx] < limites_max[idx]) (*valores[idx])++;
+            else *valores[idx] = limites_min[idx];
+          }
+        } else if (nav_modo == NAV_MODO_EDICAO) {
+          if (pagina_atual == 3) {
+            if (manut_confirma_reset) {
+              manut_confirma_selecionado = (manut_confirma_selecionado == 0) ? 1 : 0;
+            } else {
+              item_manut_selecionado = (item_manut_selecionado + 1) % NUM_ITENS_MANUT;
+              resetCache();
+            }
+          } else if (pagina_atual == 1) {
+            if (diag_estado == DIAG_ESTADO_MENU) {
+              diag_menu_selecionado = (diag_menu_selecionado + 1) % 3;
+            } else if (diag_estado == DIAG_ESTADO_CONFIRMAR) {
+              diag_confirma_selecionado = (diag_confirma_selecionado == 0) ? 1 : 0;
+            }
+          }
+        } else {
+          pagina_atual = (pagina_atual + 1) % TOTAL_PAGINAS;
+        }
+        ultimo_debounce = t;
+      }
+    }
+
+    prev_ant = agora_ant; prev_menu = agora_menu; prev_prx = agora_prx;
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
+}
+
+// ============================================================
+//  Task Serial
+// ============================================================
+void taskSerial(void* param) {
+  String buf = "";
+  for (;;) {
+    while (Serial.available()) {
+      char c = Serial.read();
+      if (c == '\n' || c == '\r') {
+        buf.trim();
+        if (buf == "RESET SIM") formatarEEPROM();
+        else if (buf == "RESET") Serial.println(">>> Apaga TODO o log de viagem. Confirme com: RESET SIM");
+        else if (buf == "DUMP") Serial.printf(">>> log=%u/%u km=%.2f motor=%lus tx=%lu rx=%lu to=%lu\n", log_count, MAX_RECORDS, (km_total_x100 + km_acumulado_x100)/100.0, segundos_motor_total, tx_ok, rx_ok, timeouts);
+        else if (buf == "ODORESET SIM") formatarHodometro();
+        else if (buf == "ODORESET") Serial.println(">>> ZERA km e horas de motor. Confirme com: ODORESET SIM");
+        else if (buf == "SLEEP") Serial.println(">>> SLEEP desabilitado nesta versao");
+        else if (buf == "MANUTRESET SIM") inicializarManutencao();
+        else if (buf == "MANUTRESET") Serial.println(">>> Reseta os 5 itens de manutencao. Confirme com: MANUTRESET SIM");
+        else if (buf == "DEBUG") dumpDebugLog();
+        else if (buf == "DEBUGRESET SIM") { formatarDebugLog(); Serial.println(">>> Debug log limpo"); }
+        else if (buf == "DEBUGRESET") Serial.println(">>> Apaga o log de debug. Confirme com: DEBUGRESET SIM");
+        else if (buf == "FUEL") { probe_pedir_fuel = true; Serial.println(">>> lendo 0x2F..."); }
+        else if (buf == "VBAT") {
+          // CORRECAO 🟡: uma unica leitura do ADC (antes chamava lerTensaoADC() 2x -> valores diferentes)
+          float v = lerTensaoADC();
+          Serial.printf(">>> ADC: %.2fV (pino %.3fV, voltcal=%.4f)\n", v, v/(VBAT_RATIO*voltcal), voltcal);
+        }
+        else if (buf.startsWith("VOLTCAL ")) {
+          float real = atof(buf.c_str() + 8);
+          float lido = lerTensaoADC() / voltcal;
+          if (real > 0.5 && lido > 0.5) { voltcal = real / lido; salvarConfig(); Serial.printf(">>> VOLTCAL=%.4f (real=%.2f lido_cru=%.2f). Salvo na EEPROM.\n", voltcal, real, lido); }
+          else Serial.println(">>> VOLTCAL: leitura invalida. Use: VOLTCAL 12.6");
+        }
+        else if (buf.startsWith("KMCAL ")) {
+          const char* s = buf.c_str() + 6;
+          float real = atof(s);
+          const char* sp = strchr(s, ' ');
+          float most = sp ? atof(sp + 1) : 0;
+          if (real > 0.5 && most > 0.5) {
+            km_cal = km_cal * (real / most);
+            salvarConfig();
+            Serial.printf(">>> KMCAL=%.4f (real=%.1f mostrado=%.1f). Salvo na EEPROM.\n", km_cal, real, most);
+          } else Serial.println(">>> KMCAL invalido. Use: KMCAL 52 48");
+        }
+        else if (buf.startsWith("ID ")) { probe_reqid = strtol(buf.c_str() + 3, NULL, 16); Serial.printf(">>> probe_reqid=%03X\n", (unsigned)probe_reqid); }
+        else if (buf.startsWith("SWEEP22 ")) {
+          probe_did_ini = (uint16_t)strtol(buf.c_str() + 8, NULL, 16);
+          const char* sp = strchr(buf.c_str() + 8, ' ');
+          probe_did_fim = sp ? (uint16_t)strtol(sp + 1, NULL, 16) : probe_did_ini;
+          probe_pedir_m22 = true;
+        }
+        else if (buf.startsWith("M22 ")) { probe_did_ini = probe_did_fim = (uint16_t)strtol(buf.c_str() + 4, NULL, 16); probe_pedir_m22 = true; }
+        else if (buf.length() > 0) Serial.printf(">>> Desconhecido: '%s'\n", buf.c_str());
+        buf = "";
+      } else buf += c;
+    }
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
+}
