@@ -48,10 +48,9 @@
 #include "esp_system.h"
 #include "driver/rtc_io.h"
 #include "rom/rtc.h"
-#include <BLEDevice.h>
-#include <BLEServer.h>
-#include <BLEUtils.h>
-#include <BLE2902.h>
+// BLE via NimBLE-Arduino (h2zero): ~30-50 KB de RAM a menos que o Bluedroid.
+// O Bluedroid nao cabia (so ~90 KB livres -> crash LoadProhibited no boot).
+#include <NimBLEDevice.h>
 
 // (fontes agora sao do LVGL: montserrat 14/28/40)
 
@@ -2690,7 +2689,7 @@ void taskTela(void* param) {
 #define BLE_SVC_UUID "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
 #define BLE_RX_UUID  "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
 #define BLE_TX_UUID  "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
-BLECharacteristic* pBleTx = nullptr;
+NimBLECharacteristic* pBleTx = nullptr;
 
 String executarComandoApp(String cmd) {
   cmd.trim();
@@ -2754,8 +2753,13 @@ String executarComandoApp(String cmd) {
   return "Cmds: STATUS | MANUT LIST | MANUT RESET <n> | MANUT KM <n> <km> | MANUT DIAS <n> <dias> | ODORESET";
 }
 
-class BleRxCallback : public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic* c) {
+// Compativel com NimBLE-Arduino 1.x e 2.x (a assinatura do onWrite mudou na 2.x).
+class BleRxCallback : public NimBLECharacteristicCallbacks {
+#if defined(NIMBLE_CPP_VERSION_MAJOR) && (NIMBLE_CPP_VERSION_MAJOR >= 2)
+  void onWrite(NimBLECharacteristic* c, NimBLEConnInfo& connInfo) override {
+#else
+  void onWrite(NimBLECharacteristic* c) override {
+#endif
     String cmd = String(c->getValue().c_str());
     String resp = executarComandoApp(cmd);
     if (pBleTx) { pBleTx->setValue(resp.c_str()); pBleTx->notify(); }
@@ -2764,19 +2768,23 @@ class BleRxCallback : public BLECharacteristicCallbacks {
 };
 
 void initBLE() {
-  BLEDevice::init("MotorGuard");
-  BLEServer* srv = BLEDevice::createServer();
-  BLEService* svc = srv->createService(BLE_SVC_UUID);
-  pBleTx = svc->createCharacteristic(BLE_TX_UUID, BLECharacteristic::PROPERTY_NOTIFY);
-  pBleTx->addDescriptor(new BLE2902());
-  BLECharacteristic* rx = svc->createCharacteristic(BLE_RX_UUID, BLECharacteristic::PROPERTY_WRITE);
+  NimBLEDevice::init("MotorGuard");
+  NimBLEServer* srv = NimBLEDevice::createServer();
+  NimBLEService* svc = srv->createService(BLE_SVC_UUID);
+  // NimBLE cria o descritor CCCD automaticamente p/ NOTIFY (nao precisa de BLE2902)
+  pBleTx = svc->createCharacteristic(BLE_TX_UUID, NIMBLE_PROPERTY::NOTIFY);
+  NimBLECharacteristic* rx = svc->createCharacteristic(BLE_RX_UUID, NIMBLE_PROPERTY::WRITE);
   rx->setCallbacks(new BleRxCallback());
   svc->start();
-  BLEAdvertising* adv = BLEDevice::getAdvertising();
+  NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
   adv->addServiceUUID(BLE_SVC_UUID);
+#if defined(NIMBLE_CPP_VERSION_MAJOR) && (NIMBLE_CPP_VERSION_MAJOR >= 2)
+  adv->enableScanResponse(true);
+#else
   adv->setScanResponse(true);
-  BLEDevice::startAdvertising();
-  Serial.println("[BLE] 'MotorGuard' anunciando (NUS)");
+#endif
+  NimBLEDevice::startAdvertising();
+  Serial.println("[BLE] 'MotorGuard' anunciando (NimBLE/NUS)");
 }
 
 // ============================================================
