@@ -27,6 +27,9 @@
 //     leitura e tratada como congestionamento do barramento e a ultima
 //     leitura e mantida (so zera RPM/vel quando a tensao confirma que o
 //     alternador parou). Tambem 1 retry rapido no RPM.
+//  E. Ajuste de data valida o dia do mes (com ano bissexto): nao deixa
+//     mais escolher 31/04, 29/02 em ano nao bissexto, etc. Ao mudar o
+//     mes/ano o dia e reajustado automaticamente.
 //
 //  ATENCAO: aparelho consome bateria do carro mesmo desligado!
 // ============================================================
@@ -2882,6 +2885,25 @@ void loop() {
 // ============================================================
 //  Tasks de entrada (botoes) e Serial
 // ============================================================
+// Dias do mes (ano2 = ano - 2000). Trata fevereiro bissexto.
+static uint8_t diasNoMes(uint8_t mes, uint8_t ano2) {
+  static const uint8_t dias[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  if (mes < 1 || mes > 12) return 31;
+  if (mes == 2) {
+    uint16_t ano = 2000 + ano2;
+    bool bissexto = (ano % 4 == 0 && ano % 100 != 0) || (ano % 400 == 0);
+    return bissexto ? 29 : 28;
+  }
+  return dias[mes - 1];
+}
+// Garante que o dia escolhido cabe no mes/ano atuais (ex.: 31 -> 30 ao virar p/ abril,
+// ou 29/02 -> 28/02 em ano nao bissexto).
+static void ajustaDiaValido() {
+  uint8_t maxd = diasNoMes(ajuste_mes, ajuste_ano);
+  if (ajuste_dia > maxd) ajuste_dia = maxd;
+  if (ajuste_dia < 1)    ajuste_dia = 1;
+}
+
 void taskBotoes(void* param) {
   Serial.println("[Task Botoes] iniciada");
   pinMode(BTN_ANT, INPUT_PULLUP);
@@ -2937,6 +2959,7 @@ void taskBotoes(void* param) {
           } else if (ajuste_estado == AJUSTE_ESTADO_SEG) {
             ajuste_estado = AJUSTE_ESTADO_SALVAR;
           } else if (ajuste_estado == AJUSTE_ESTADO_SALVAR) {
+            ajustaDiaValido();   // ultima checagem antes de gravar no RTC
             rtcAdjust(DateTime(2000 + ajuste_ano, ajuste_mes, ajuste_dia,
                                ajuste_hora, ajuste_min, ajuste_seg));
             hora_nao_ajustada = false;
@@ -2994,9 +3017,10 @@ void taskBotoes(void* param) {
             int idx = ajuste_estado - AJUSTE_ESTADO_DIA;
             volatile uint8_t* valores[] = {&ajuste_dia, &ajuste_mes, &ajuste_ano, &ajuste_hora, &ajuste_min, &ajuste_seg};
             uint8_t limites_min[] = {1, 1, 20, 0, 0, 0};
-            uint8_t limites_max[] = {31, 12, 99, 23, 59, 59};
+            uint8_t limites_max[] = {diasNoMes(ajuste_mes, ajuste_ano), 12, 99, 23, 59, 59};
             if (*valores[idx] > limites_min[idx]) (*valores[idx])--;
             else *valores[idx] = limites_max[idx];
+            if (idx == 1 || idx == 2) ajustaDiaValido();  // mudou mes/ano -> reajusta o dia
           }
         } else if (nav_modo == NAV_MODO_EDICAO) {
           if (pagina_atual == 3) {
@@ -3030,9 +3054,10 @@ void taskBotoes(void* param) {
             int idx = ajuste_estado - AJUSTE_ESTADO_DIA;
             volatile uint8_t* valores[] = {&ajuste_dia, &ajuste_mes, &ajuste_ano, &ajuste_hora, &ajuste_min, &ajuste_seg};
             uint8_t limites_min[] = {1, 1, 20, 0, 0, 0};
-            uint8_t limites_max[] = {31, 12, 99, 23, 59, 59};
+            uint8_t limites_max[] = {diasNoMes(ajuste_mes, ajuste_ano), 12, 99, 23, 59, 59};
             if (*valores[idx] < limites_max[idx]) (*valores[idx])++;
             else *valores[idx] = limites_min[idx];
+            if (idx == 1 || idx == 2) ajustaDiaValido();  // mudou mes/ano -> reajusta o dia
           }
         } else if (nav_modo == NAV_MODO_EDICAO) {
           if (pagina_atual == 3) {
