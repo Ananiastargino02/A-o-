@@ -2943,6 +2943,17 @@ void loop() {
                   agora - hb_tela, agora - hb_botoes);
   }
 
+  // ===== BLE: garante que volta a ANUNCIAR quando ninguem esta conectado =====
+  // Na partida do carro a tensao cai um instante e a conexao BLE cai. Sem isto, o
+  // BLE nao reaparecia (so religando na tomada). Aqui, a cada 3s, se nao houver
+  // cliente conectado, reativa o anuncio (startAdvertising e idempotente).
+  static uint32_t prox_adv = 0;
+  if (pBleTx && agora - prox_adv >= 3000) {
+    prox_adv = agora;
+    NimBLEServer* s = NimBLEDevice::getServer();
+    if (s && s->getConnectedCount() == 0) NimBLEDevice::startAdvertising();
+  }
+
   if (agora > 20000) {
     if ((agora - hb_tela > 12000) || (agora - hb_botoes > 12000)) {
       Serial.printf("[WDT] travou (tela=%lums btn=%lums) -> reiniciando\n",
