@@ -2850,9 +2850,9 @@ void setup() {
   xTaskCreatePinnedToCore(taskSerial,    "Serial", 4096, NULL, 1, NULL, 1);
   xTaskCreatePinnedToCore(taskBotoes,    "Botoes", 4096, NULL, 2, NULL, 1);
 
-  // initBLE();   // TESTE: BLE desligado p/ confirmar falta de RAM (volta com NimBLE)
-  Serial.println("[TESTE] BLE desligado nesta build");
-  Serial.printf("[HEAP] livre apos setup = %u bytes\n", ESP.getFreeHeap());
+  Serial.printf("[HEAP] antes do BLE = %u bytes\n", ESP.getFreeHeap());
+  initBLE();
+  Serial.printf("[HEAP] livre apos setup (BLE ON) = %u bytes\n", ESP.getFreeHeap());
 
   debugLog(0, "Setup OK v63 LVGL");
   Serial.println("=== MotorGuard v6.3 pronto ===");
