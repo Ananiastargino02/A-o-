@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>VEICAN</title>
+<style>
+  :root{
+    --bg:#05070D; --card:#0c1320; --card2:#101a2b; --line:#16263A;
+    --cyan:#00E5FF; --cyan2:#4DD0E1; --txt:#ECEFF1; --dim:#78909C;
+    --ok:#4CAF50; --warn:#FFC107; --bad:#FF1744;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+    padding:14px;max-width:600px;margin:0 auto;padding-bottom:40px}
+  header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+  h1{font-size:24px;margin:0;letter-spacing:2px;font-weight:800}
+  h1 span{color:var(--cyan)}
+  .pill{font-size:12px;padding:5px 10px;border-radius:20px;background:#3a1414;color:#ff8a80;border:1px solid #5a1414}
+  .pill.on{background:#0e2a17;color:#9ff5b5;border-color:#1f5a30}
+  button{font-family:inherit;font-size:15px;color:var(--txt);background:var(--card2);
+    border:1px solid var(--line);border-radius:10px;padding:12px 14px;cursor:pointer}
+  button:active{filter:brightness(1.35)} button:disabled{opacity:.4}
+  .primary{background:var(--cyan);color:#05202a;border:none;font-weight:700;width:100%;padding:15px;font-size:17px}
+  .danger{background:#2a0d0d;border-color:#5a1414;color:#ff8a80}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin:12px 0}
+  .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:9px;margin:12px 0}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px}
+  .card .lbl{font-size:11px;color:var(--dim);letter-spacing:1px}
+  .card .val{font-size:23px;font-weight:700;margin-top:3px}
+  .card .val.sm{font-size:17px}
+  .row{display:flex;gap:9px;margin:10px 0}
+  .row button{flex:1}
+  section{margin-top:16px}
+  .stit{font-size:13px;color:var(--cyan2);letter-spacing:1px;margin:0 0 8px 2px;text-transform:uppercase}
+  .item{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px}
+  .item .top{display:flex;justify-content:space-between;align-items:center}
+  .item .nome{font-size:16px;font-weight:600}
+  .item .pct{font-size:14px;font-weight:700}
+  .item .sub{font-size:12px;color:var(--dim);margin-top:3px}
+  .bar{height:6px;background:var(--line);border-radius:3px;margin-top:8px;overflow:hidden}
+  .bar i{display:block;height:100%;border-radius:3px;background:var(--cyan)}
+  .item .acts{display:flex;gap:8px;margin-top:9px}
+  .item .acts button{flex:1;padding:7px;font-size:13px}
+  input,select{background:var(--card);border:1px solid var(--line);border-radius:10px;color:var(--txt);
+    padding:11px;font-size:15px;font-family:inherit;width:100%}
+  .frm{display:grid;gap:8px}
+  .frm .two{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .cmd{display:flex;gap:8px}
+  .cmd input{flex:1}
+  .log{background:#04060b;border:1px solid var(--line);border-radius:10px;padding:10px;
+    font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:#9fb3c8;
+    white-space:pre-wrap;word-break:break-word;max-height:170px;overflow:auto;margin-top:8px}
+  .hist{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:7px;
+    display:flex;justify-content:space-between;align-items:center;gap:8px}
+  .hist .h-main{font-size:15px;font-weight:600}
+  .hist .h-sub{font-size:12px;color:var(--dim);margin-top:2px}
+  .hist .x{background:none;border:none;color:#ff6b6b;font-size:18px;padding:4px 8px}
+  .hint{font-size:12px;color:var(--dim);text-align:center;margin-top:16px;line-height:1.6}
+  .hide{display:none}
+  summary{cursor:pointer;color:var(--dim);font-size:13px;padding:6px 0}
+  .badge{font-size:11px;color:var(--dim)}
+</style>
+</head>
+<body>
+
+  <header>
+    <h1>VEI<span>CAN</span></h1>
+    <span id="status" class="pill">desconectado</span>
+  </header>
+
+  <button id="btnConn" class="primary">Conectar</button>
+
+  <!-- ===== PERFIL DO CARRO (sempre visivel) ===== -->
+  <section>
+    <p class="stit">Carro</p>
+    <div id="perfilView" class="card">
+      <div id="perfilTxt" style="font-size:16px;font-weight:600">Toque para adicionar os dados do carro</div>
+      <div id="perfilKm" class="badge" style="margin-top:4px"></div>
+      <div class="row" style="margin-bottom:0">
+        <button id="btnEditPerfil">Editar dados do carro</button>
+      </div>
+    </div>
+    <div id="perfilEdit" class="card hide">
+      <div class="frm">
+        <input id="pNome" placeholder="Nome (ex.: Meu Tiguan)" />
+        <div class="two">
+          <input id="pMarca" placeholder="Marca" />
+          <input id="pModelo" placeholder="Modelo" />
+        </div>
+        <div class="two">
+          <input id="pAno" placeholder="Ano" inputmode="numeric" />
+          <input id="pKm" placeholder="Km atual" inputmode="numeric" />
+        </div>
+        <div class="two">
+          <button id="btnSalvarPerfil" class="primary" style="padding:12px;font-size:15px">Salvar</button>
+          <button id="btnCancelPerfil">Cancelar</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== PAINEL (so quando conectado) ===== -->
+  <div id="painel" class="hide">
+    <section>
+      <p class="stit">Painel</p>
+      <div class="grid">
+        <div class="card"><div class="lbl">KM APARELHO</div><div id="vKm" class="val">--</div></div>
+        <div class="card"><div class="lbl">BATERIA</div><div id="vBat" class="val">--</div></div>
+      </div>
+      <div class="grid3">
+        <div class="card"><div class="lbl">RPM</div><div id="vRpm" class="val sm">--</div></div>
+        <div class="card"><div class="lbl">TEMP</div><div id="vTemp" class="val sm">--</div></div>
+        <div class="card"><div class="lbl">COMB.</div><div id="vComb" class="val sm">--</div></div>
+      </div>
+      <div class="grid">
+        <div class="card"><div class="lbl">TEMPO MOTOR</div><div id="vMotor" class="val sm">--</div></div>
+        <div class="card"><div class="lbl">PROTOCOLO</div><div id="vProto" class="val sm">--</div></div>
+      </div>
+      <div class="row"><button id="btnStatus">↻ Atualizar painel</button></div>
+    </section>
+
+    <!-- ===== MANUTENCAO ===== -->
+    <section>
+      <p class="stit">Manutenção</p>
+      <div id="listaManut"></div>
+      <div class="row"><button id="btnManut">Carregar manutenção</button></div>
+    </section>
+
+    <!-- ===== DIAGNOSTICO ===== -->
+    <section>
+      <p class="stit">Diagnóstico (códigos de falha)</p>
+      <div id="diagBox" class="card"><span class="badge">Toque em "Ler códigos".</span></div>
+      <div class="row">
+        <button id="btnDtcLer">Ler códigos</button>
+        <button id="btnDtcApagar" class="danger">Apagar códigos</button>
+      </div>
+    </section>
+
+    <!-- ===== AVANCADO ===== -->
+    <section>
+      <details>
+        <summary>Avançado (calibração / zerar)</summary>
+        <div class="row" style="margin-top:10px">
+          <button id="btnVoltcal">Calibrar tensão</button>
+          <button id="btnKmcal">Calibrar km</button>
+        </div>
+        <div class="row" style="margin-top:0">
+          <button id="btnOdoReset" class="danger">Zerar hodômetro</button>
+        </div>
+      </details>
+    </section>
+  </div>
+
+  <!-- ===== HISTORICO (sempre visivel; salvo no celular) ===== -->
+  <section>
+    <p class="stit">Histórico de manutenções</p>
+    <div id="histLista"></div>
+    <details>
+      <summary>+ Adicionar manutenção manual</summary>
+      <div class="frm card" style="margin-top:8px">
+        <select id="hItem"></select>
+        <div class="two">
+          <input id="hKm" placeholder="Km" inputmode="numeric" />
+          <input id="hData" type="date" />
+        </div>
+        <button id="btnAddHist" class="primary" style="padding:12px;font-size:15px">Adicionar ao histórico</button>
+      </div>
+    </details>
+  </section>
+
+  <section>
+    <details>
+      <summary>Console / comando manual</summary>
+      <div class="cmd" style="margin-top:8px">
+        <input id="inpCmd" placeholder="ex.: STATUS" autocapitalize="characters" autocomplete="off" />
+        <button id="btnSend">Enviar</button>
+      </div>
+      <div id="log" class="log"></div>
+    </details>
+  </section>
+
+  <p class="hint">
+    iPhone: abra no navegador <b>Bluefy</b> &nbsp;·&nbsp; Android: abra no <b>Chrome</b><br>
+    Ligue o Bluetooth e fique perto do VEICAN.
+  </p>
+
+<script>
+const NUS='6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const RX ='6e400002-b5a3-f393-e0a9-e50e24dcca9e';
+const TX ='6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+// nomes padrao dos 5 itens (mesma ordem do aparelho)
+let NOMES = ['Oleo Motor','Filtro Ar','Vela','Oleo Cambio','Correia'];
+
+let device, rxChar, txChar, lastDeviceKm = 0;
+let rxAcc='', rxTimer=null;
+
+const $ = id => document.getElementById(id);
+function log(t){ const l=$('log'); l.textContent += t+'\n'; l.scrollTop=l.scrollHeight; }
+function setStatus(on,txt){ const s=$('status'); s.textContent=txt; s.classList.toggle('on',on); }
+
+/* ---------- armazenamento local (celular) ---------- */
+function getPerfil(){ try{return JSON.parse(localStorage.getItem('veican_perfil'))||{}}catch(e){return {}} }
+function setPerfil(p){ localStorage.setItem('veican_perfil', JSON.stringify(p)); }
+function getHist(){ try{return JSON.parse(localStorage.getItem('veican_hist'))||[]}catch(e){return []} }
+function setHist(h){ localStorage.setItem('veican_hist', JSON.stringify(h)); }
+
+/* ---------- perfil do carro ---------- */
+function renderPerfil(){
+  const p=getPerfil();
+  const nome = p.nome || '';
+  const linha2 = [p.marca,p.modelo,p.ano].filter(Boolean).join(' · ');
+  $('perfilTxt').textContent = nome ? nome : (linha2 || 'Toque para adicionar os dados do carro');
+  $('perfilKm').textContent = [linha2 && nome ? linha2 : '', p.km!=null && p.km!=='' ? ('Km do carro: '+Number(p.km).toLocaleString('pt-BR')) : ''].filter(Boolean).join('  ·  ');
+}
+$('btnEditPerfil').addEventListener('click',()=>{
+  const p=getPerfil();
+  $('pNome').value=p.nome||''; $('pMarca').value=p.marca||''; $('pModelo').value=p.modelo||'';
+  $('pAno').value=p.ano||''; $('pKm').value=p.km||'';
+  $('perfilView').classList.add('hide'); $('perfilEdit').classList.remove('hide');
+});
+$('btnCancelPerfil').addEventListener('click',()=>{ $('perfilEdit').classList.add('hide'); $('perfilView').classList.remove('hide'); });
+$('btnSalvarPerfil').addEventListener('click',()=>{
+  setPerfil({nome:$('pNome').value.trim(), marca:$('pMarca').value.trim(), modelo:$('pModelo').value.trim(),
+             ano:$('pAno').value.trim(), km:$('pKm').value.trim()});
+  $('perfilEdit').classList.add('hide'); $('perfilView').classList.remove('hide'); renderPerfil();
+});
+
+/* ---------- historico ---------- */
+function renderHist(){
+  const h=getHist().slice().sort((a,b)=> (b.data||'').localeCompare(a.data||''));
+  const box=$('histLista'); box.innerHTML='';
+  if(h.length===0){ box.innerHTML='<div class="badge" style="padding:4px 2px">Nenhuma manutenção registrada ainda.</div>'; }
+  h.forEach(e=>{
+    const d=document.createElement('div'); d.className='hist';
+    const data = e.data ? e.data.split('-').reverse().join('/') : '';
+    d.innerHTML='<div><div class="h-main">'+e.nome+'</div>'+
+      '<div class="h-sub">'+(e.km!=null?Number(e.km).toLocaleString('pt-BR')+' km':'')+(data?'  ·  '+data:'')+'</div></div>'+
+      '<button class="x" title="apagar">✕</button>';
+    d.querySelector('.x').addEventListener('click',()=>{
+      if(confirm('Apagar este registro do histórico?')){ setHist(getHist().filter(x=>x.id!==e.id)); renderHist(); }
+    });
+    box.appendChild(d);
+  });
+  // popular select do form
+  const sel=$('hItem'); sel.innerHTML=''; NOMES.forEach((n,i)=>{ const o=document.createElement('option'); o.value=i; o.textContent=n; sel.appendChild(o); });
+}
+function addHist(idx, km, dataISO){
+  const h=getHist();
+  h.push({id:Date.now()+''+Math.floor(Math.random()*999), idx:idx, nome:NOMES[idx]||('Item '+idx), km:km, data:dataISO});
+  setHist(h); renderHist();
+}
+$('btnAddHist').addEventListener('click',()=>{
+  const idx=+$('hItem').value;
+  const km=$('hKm').value.trim();
+  const data=$('hData').value || new Date().toISOString().slice(0,10);
+  addHist(idx, km===''?null:Number(km), data);
+  $('hKm').value='';
+});
+
+/* ---------- BLE ---------- */
+if(!navigator.bluetooth){ $('btnConn').disabled=true; $('btnConn').textContent='Navegador sem Web Bluetooth (use Chrome/Bluefy)'; }
+
+$('btnConn').addEventListener('click', async ()=>{
+  try{
+    setStatus(false,'procurando…');
+    device = await navigator.bluetooth.requestDevice({ filters:[{services:[NUS]}], optionalServices:[NUS] });
+    device.addEventListener('gattserverdisconnected', onDisconnect);
+    setStatus(false,'conectando…');
+    const server = await device.gatt.connect();
+    const svc = await server.getPrimaryService(NUS);
+    rxChar = await svc.getCharacteristic(RX);
+    txChar = await svc.getCharacteristic(TX);
+    await txChar.startNotifications();
+    txChar.addEventListener('characteristicvaluechanged', onNotify);
+    onConnect();
+  }catch(e){ setStatus(false,'desconectado'); log('ERRO: '+e.message); }
+});
+
+function onConnect(){
+  setStatus(true, device.name||'VEICAN');
+  $('btnConn').classList.add('hide'); $('painel').classList.remove('hide');
+  log('conectado.'); send('STATUS'); setTimeout(()=>send('MANUT LIST'),500);
+}
+function onDisconnect(){
+  setStatus(false,'desconectado');
+  $('btnConn').classList.remove('hide'); $('painel').classList.add('hide'); log('desconectado.');
+}
+
+async function send(cmd){
+  if(!rxChar){ log('nao conectado'); return; }
+  log('-> '+cmd);
+  const data=new TextEncoder().encode(cmd);
+  try{ await rxChar.writeValue(data); }
+  catch(e){ try{ await rxChar.writeValueWithoutResponse(data); }catch(e2){ log('ERRO envio: '+e2.message); } }
+}
+
+function onNotify(e){
+  const txt=new TextDecoder().decode(e.target.value);
+  rxAcc+=txt; clearTimeout(rxTimer);
+  rxTimer=setTimeout(()=>{ const r=rxAcc; rxAcc=''; processar(r); }, 150);
+}
+function processar(resp){
+  log('<- '+resp);
+  if(/km=/.test(resp)) parseStatus(resp);
+  else if(/^DTC\s/.test(resp.trim())) parseDTC(resp);
+  else if(/^\d+:.*%/m.test(resp)) parseManut(resp);
+}
+
+function parseStatus(s){
+  const g=(re)=>(s.match(re)||[])[1];
+  const km=g(/km=(\d+)/), bat=g(/bat=([\d.]+V)/), rpm=g(/rpm=(\d+)/), temp=g(/temp=(-?\d+)/),
+        vel=g(/vel=(\d+)/), comb=g(/comb=(\d+)/), motor=g(/motor=(\S+)/), pr=g(/proto=(\S+)/), es=g(/estado=(\S+)/);
+  if(km){ lastDeviceKm=+km; $('vKm').textContent=Number(km).toLocaleString('pt-BR')+' km'; }
+  if(bat) $('vBat').textContent=bat;
+  if(rpm) $('vRpm').textContent=rpm;
+  if(temp) $('vTemp').textContent=temp+'°C';
+  if(comb) $('vComb').textContent=comb+'%';
+  if(motor) $('vMotor').textContent=motor.replace('h','h ');
+  if(pr) $('vProto').textContent=pr;
+  if(es) setStatus(true,(es==='OPERANDO'?'LIGADO':es));
+}
+
+function parseManut(s){
+  const box=$('listaManut'); box.innerHTML='';
+  s.split('\n').forEach(linha=>{
+    const m=linha.match(/^(\d+):(.+?)\s+(\d+)%(.*)$/);
+    if(!m) return;
+    const idx=+m[1], nome=m[2].trim(), pct=Math.min(100,+m[3]), extra=m[4].trim();
+    NOMES[idx]=nome;
+    const venc=pct>=100, cor=venc?'var(--bad)':(pct>=80?'var(--warn)':'var(--cyan)');
+    const div=document.createElement('div'); div.className='item';
+    div.innerHTML='<div class="top"><span class="nome">'+nome+'</span>'+
+      '<span class="pct" style="color:'+cor+'">'+(venc?'VENCIDO':pct+'%')+'</span></div>'+
+      '<div class="sub">'+extra.replace('int=','intervalo: ')+'</div>'+
+      '<div class="bar"><i style="width:'+pct+'%;background:'+cor+'"></i></div>'+
+      '<div class="acts"><button class="bReset">Resetar (troquei)</button>'+
+      '<button class="bKm">Intervalo</button></div>';
+    div.querySelector('.bReset').addEventListener('click',()=>fazerReset(idx,nome));
+    div.querySelector('.bKm').addEventListener('click',()=>{
+      const v=prompt('Novo intervalo em KM para "'+nome+'":');
+      if(v && +v>=100){ send('MANUT KM '+idx+' '+(+v)); setTimeout(()=>send('MANUT LIST'),400); }
+    });
+    box.appendChild(div);
+  });
+  renderHist();
+}
+
+function fazerReset(idx,nome){
+  const p=getPerfil();
+  const sug = (p.km && +p.km>0) ? p.km : lastDeviceKm;
+  const v = prompt('Você fez a manutenção de "'+nome+'".\nKm em que foi feita:', sug);
+  if(v===null) return;                 // cancelou: nao faz nada
+  send('MANUT RESET '+idx);            // zera no aparelho
+  addHist(idx, v===''?null:Number(v), new Date().toISOString().slice(0,10)); // salva no historico
+  setTimeout(()=>send('MANUT LIST'),500);
+}
+
+function parseDTC(s){
+  const lines=s.split('\n').filter(x=>x.trim());
+  const box=$('diagBox'); box.innerHTML='';
+  // primeira linha: "DTC <n>"
+  const codes=lines.slice(1);
+  if(codes.length===0 || /nenhum/i.test(s)){
+    box.innerHTML='<span style="color:var(--ok)">✓ Nenhum código de falha</span>'; return;
+  }
+  codes.forEach(c=>{
+    if(/nenhum/i.test(c)){ box.innerHTML='<span style="color:var(--ok)">✓ Nenhum código de falha</span>'; return; }
+    const d=document.createElement('div'); d.style.padding='4px 0'; d.style.color='var(--warn)';
+    d.textContent='⚠ '+c; box.appendChild(d);
+  });
+}
+
+/* ---------- botoes painel ---------- */
+$('btnStatus').addEventListener('click',()=>send('STATUS'));
+$('btnManut').addEventListener('click',()=>send('MANUT LIST'));
+$('btnDtcLer').addEventListener('click',()=>{ $('diagBox').innerHTML='<span class="badge">Lendo…</span>'; send('DTC LER'); });
+$('btnDtcApagar').addEventListener('click',()=>{ if(confirm('Apagar TODOS os códigos de falha do carro?')){ $('diagBox').innerHTML='<span class="badge">Apagando…</span>'; send('DTC APAGAR'); }});
+$('btnVoltcal').addEventListener('click',()=>{ const v=prompt('Tensão REAL medida no multímetro (ex.: 12.6):'); if(v) send('VOLTCAL '+v); });
+$('btnKmcal').addEventListener('click',()=>{ const r=prompt('Km REAL rodado:'); if(!r) return; const m=prompt('Km que o aparelho MOSTROU:'); if(m) send('KMCAL '+r+' '+m); });
+$('btnOdoReset').addEventListener('click',()=>{ if(confirm('ZERAR o hodômetro do aparelho? (km e tempo de motor)')) send('ODORESET'); });
+$('btnSend').addEventListener('click',()=>{ const v=$('inpCmd').value.trim(); if(v){ send(v); $('inpCmd').value=''; }});
+$('inpCmd').addEventListener('keydown',e=>{ if(e.key==='Enter') $('btnSend').click(); });
+
+/* ---------- init ---------- */
+$('hData').value=new Date().toISOString().slice(0,10);
+renderPerfil(); renderHist();
+</script>
+</body>
+</html>

@@ -2710,12 +2710,19 @@ String executarComandoApp(String cmd) {
   String up = cmd; up.toUpperCase();
 
   if (up == "STATUS") {
-    float v = lerTensaoADC();
+    DadosCarro d = {};
+    if (xSemaphoreTake(mutex_dados, pdMS_TO_TICKS(50)) == pdTRUE) { d = dados_publicos; xSemaphoreGive(mutex_dados); }
+    float v = (d.tensao > 0) ? d.tensao : lerTensaoADC();
     uint32_t km = (km_total_x100 + km_acumulado_x100) / 100;
-    char b[128];
-    snprintf(b, sizeof(b), "km=%lu bat=%.1fV proto=%s/%dk estado=%s",
-             km, v, obd_extd ? "29b" : "11b", obd_baud,
-             (estadoAtual == STANDBY) ? "STANDBY" : "OPERANDO");
+    uint32_t seg = segundos_motor_total;
+    int mh = seg / 3600, mm = (seg % 3600) / 60;
+    char b[200];
+    snprintf(b, sizeof(b),
+      "km=%lu bat=%.1fV rpm=%d temp=%d vel=%d comb=%d motor=%dh%02dm proto=%s/%dk estado=%s",
+      km, v, d.rpm > 0 ? d.rpm : 0, d.temp_motor, d.velocidade > 0 ? d.velocidade : 0,
+      d.combust >= 0 ? d.combust : 0, mh, mm,
+      obd_extd ? "29b" : "11b", obd_baud,
+      (estadoAtual == STANDBY) ? "STANDBY" : "OPERANDO");
     return String(b);
   }
   if (up == "MANUT LIST") {
@@ -2764,7 +2771,50 @@ String executarComandoApp(String cmd) {
     return String("OK: ") + NOMES_ITENS[n] + " intervalo = " + String(dias) + " dias";
   }
   if (up == "ODORESET") { formatarHodometro(); return "OK: hodometro zerado"; }
-  return "Cmds: STATUS | MANUT LIST | MANUT RESET <n> | MANUT KM <n> <km> | MANUT DIAS <n> <dias> | ODORESET";
+
+  // ===== Diagnostico (DTCs) via BLE: dispara a leitura na taskCAN e espera o resultado =====
+  if (up == "DTC LER") {
+    diag_solicitar_leitura = true;
+    diag_estado = DIAG_ESTADO_LENDO;
+    uint32_t t0 = millis();
+    while (diag_estado != DIAG_ESTADO_RESULTADO && millis() - t0 < 6000) vTaskDelay(pdMS_TO_TICKS(50));
+    if (diag_estado != DIAG_ESTADO_RESULTADO) return "DTC timeout";
+    String r = "DTC " + String(diag_num_dtcs) + "\n";
+    if (diag_num_dtcs == 0) r += "Nenhum codigo\n";
+    for (int i = 0; i < diag_num_dtcs && i < MAX_DTCS; i++) {
+      r += String(diag_dtcs[i]);
+      const char* desc = descricaoDTC(diag_dtcs[i]);
+      if (desc) { r += " "; r += desc; }
+      r += "\n";
+    }
+    return r;
+  }
+  if (up == "DTC APAGAR") {
+    diag_solicitar_apagar = true;
+    diag_estado = DIAG_ESTADO_APAGANDO;
+    uint32_t t0 = millis();
+    while (diag_estado == DIAG_ESTADO_APAGANDO && millis() - t0 < 6000) vTaskDelay(pdMS_TO_TICKS(50));
+    return (diag_estado == DIAG_ESTADO_APAGADO_OK) ? "DTC apagados" : "Falha ao apagar";
+  }
+
+  // ===== Calibracao via BLE =====
+  if (up.startsWith("VOLTCAL ")) {
+    float real = cmd.substring(8).toFloat();
+    float lido = lerTensaoADC() / voltcal;
+    if (real > 0.5 && lido > 0.5) { voltcal = real / lido; salvarConfig(); return "OK: VOLTCAL=" + String(voltcal, 4); }
+    return "ERRO: use VOLTCAL 12.6";
+  }
+  if (up.startsWith("KMCAL ")) {
+    String args = cmd.substring(6); args.trim();
+    int sp = args.indexOf(' ');
+    if (sp < 0) return "Uso: KMCAL <real> <mostrado>";
+    float real = args.substring(0, sp).toFloat();
+    float most = args.substring(sp + 1).toFloat();
+    if (real > 0.5 && most > 0.5) { km_cal = km_cal * (real / most); salvarConfig(); return "OK: KMCAL=" + String(km_cal, 4); }
+    return "ERRO: use KMCAL 52 48";
+  }
+
+  return "Cmds: STATUS | MANUT LIST | MANUT RESET <n> | MANUT KM <n> <km> | MANUT DIAS <n> <dias> | DTC LER | DTC APAGAR | VOLTCAL <v> | KMCAL <r> <m> | ODORESET";
 }
 
 // Compativel com NimBLE-Arduino 1.x e 2.x (a assinatura do onWrite mudou na 2.x).
@@ -2782,7 +2832,7 @@ class BleRxCallback : public NimBLECharacteristicCallbacks {
 };
 
 void initBLE() {
-  NimBLEDevice::init("MotorGuard");
+  NimBLEDevice::init("VEICAN");
   NimBLEServer* srv = NimBLEDevice::createServer();
   NimBLEService* svc = srv->createService(BLE_SVC_UUID);
   // NimBLE cria o descritor CCCD automaticamente p/ NOTIFY (nao precisa de BLE2902)
@@ -2798,7 +2848,7 @@ void initBLE() {
   adv->setScanResponse(true);
 #endif
   NimBLEDevice::startAdvertising();
-  Serial.println("[BLE] 'MotorGuard' anunciando (NimBLE/NUS)");
+  Serial.println("[BLE] 'VEICAN' anunciando (NimBLE/NUS)");
 }
 
 // ============================================================
@@ -2813,7 +2863,7 @@ void setup() {
   analogSetPinAttenuation(PIN_VBAT, ADC_11db);
   esp_reset_reason_t reset_reason = esp_reset_reason();
   esp_sleep_wakeup_cause_t wake_cause = esp_sleep_get_wakeup_cause();
-  Serial.println("\n=== MOTOR GUARD v6.3 LVGL ===");
+  Serial.println("\n=== VEICAN v6.3 LVGL ===");
   const char* reset_str[] = {"UNKNOWN","POWERON","EXT","SW","PANIC","INT_WDT","TASK_WDT","WDT","DEEPSLEEP","BROWNOUT","SDIO"};
   Serial.printf("[Boot] reset_reason=%s wake=%d\n", (reset_reason < 11) ? reset_str[reset_reason] : "?", wake_cause);
 
@@ -2877,7 +2927,7 @@ void setup() {
   Serial.printf("[HEAP] livre apos setup (BLE ON) = %u bytes\n", ESP.getFreeHeap());
 
   debugLog(0, "Setup OK v63 LVGL");
-  Serial.println("=== MotorGuard v6.3 pronto ===");
+  Serial.println("=== VEICAN v6.3 pronto ===");
   Serial.println("Cmds: DUMP DEBUG FUEL VBAT | VOLTCAL <v> | KMCAL <real> <mostrado>");
   Serial.println("Destrutivos (pedem SIM): RESET ODORESET MANUTRESET DEBUGRESET");
 }
