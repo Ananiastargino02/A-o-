@@ -2691,17 +2691,20 @@ void taskTela(void* param) {
 #define BLE_TX_UUID  "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
 NimBLECharacteristic* pBleTx = nullptr;
 
-// Envia a resposta em pedacos de 20 bytes (cabe em qualquer MTU): respostas longas
-// como "MANUT LIST" nao sao mais cortadas. O app junta os pedacos do outro lado.
+// Envia a resposta em pedacos GRANDES (180 bytes). O iPhone/Android negociam MTU ~185,
+// entao STATUS e MANUT LIST cabem em 1 pacote. Pedacos pequenos (20 bytes) eram perdidos
+// pelo iPhone (mandava rapido demais) e a resposta chegava incompleta. Intervalo maior
+// entre pacotes evita perda quando precisa de mais de um (ex.: lista grande de DTCs).
 static void bleNotificar(const String& s) {
   if (!pBleTx) return;
-  const int CH = 20;
+  const int CH = 180;
   int n = s.length();
+  if (n == 0) return;
   for (int i = 0; i < n; i += CH) {
     int len = (n - i < CH) ? (n - i) : CH;
     pBleTx->setValue((uint8_t*)(s.c_str() + i), len);
     pBleTx->notify();
-    vTaskDelay(pdMS_TO_TICKS(12));
+    vTaskDelay(pdMS_TO_TICKS(40));
   }
 }
 
