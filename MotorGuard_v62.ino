@@ -1818,8 +1818,8 @@ public:
     { auto c = _panel.config();
       c.pin_cs = 5; c.pin_rst = 4; c.pin_busy = -1;
       c.panel_width = 240; c.panel_height = 320;
-      // ILI9341: invert = false (se as cores sairem invertidas, troque p/ true)
-      c.invert = false; c.rgb_order = false; _panel.config(c); }
+      // REV3: este ILI9341 precisa de invert = true (senao fundo fica branco/cores invertidas)
+      c.invert = true; c.rgb_order = false; _panel.config(c); }
     setPanel(&_panel);
   }
 };
