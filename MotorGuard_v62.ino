@@ -1816,7 +1816,7 @@ public:
       // pode subir p/ 20/27/40MHz. Se continuar chuvisco a 10MHz+paisagem = HARDWARE (solda/FPC).
       c.freq_write = 10000000; c.freq_read = 8000000;
       c.pin_sclk = 18; c.pin_mosi = 23; c.pin_miso = -1; c.pin_dc = 2;
-      c.dma_channel = 1; _bus.config(c); _panel.setBus(&_bus); }
+      c.dma_channel = 0; _bus.config(c); _panel.setBus(&_bus); }   // REV3: DMA off p/ testar se o chuvisco e do DMA
     { auto c = _panel.config();
       c.pin_cs = 5; c.pin_rst = 4; c.pin_busy = -1;
       c.panel_width = 240; c.panel_height = 320;
