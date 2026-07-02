@@ -3120,9 +3120,18 @@ void taskBotoes(void* param) {
       menu_longpress_disparado = false;
     }
 
-    // REV3: botao ENTER = mesma acao de OK/confirmar (clique)
+    // REV3: botao ENTER = OK/confirmar (clique). Atalho: na Manutencao em edicao,
+    // ENTER abre o reset do item selecionado (sem precisar segurar MENU 4s).
     if (prev_enter == LOW && agora_enter == HIGH) {
-      if (t - ultimo_enter > DEBOUNCE_MS) { botaoOK(); ultimo_enter = t; }
+      if (t - ultimo_enter > DEBOUNCE_MS) {
+        if (pagina_atual == 3 && nav_modo == NAV_MODO_EDICAO && !manut_confirma_reset) {
+          manut_confirma_reset = true;
+          manut_confirma_selecionado = 1;   // padrao NAO (seguranca)
+        } else {
+          botaoOK();
+        }
+        ultimo_enter = t;
+      }
     }
 
     if (t - ultimo_debounce > DEBOUNCE_MS) {
