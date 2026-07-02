@@ -1812,7 +1812,9 @@ public:
   LGFX() {
     { auto c = _bus.config();
       c.spi_host = VSPI_HOST; c.spi_mode = 0;
-      c.freq_write = 40000000; c.freq_read = 16000000;
+      // REV3: 20MHz p/ evitar chuviscos/falhas no display via conector (era 40MHz).
+      // Se ficar limpo, pode tentar subir p/ 27MHz; se ainda glitchar, baixe p/ 10MHz.
+      c.freq_write = 20000000; c.freq_read = 16000000;
       c.pin_sclk = 18; c.pin_mosi = 23; c.pin_miso = -1; c.pin_dc = 2;
       c.dma_channel = 1; _bus.config(c); _panel.setBus(&_bus); }
     { auto c = _panel.config();
