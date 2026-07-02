@@ -2654,7 +2654,7 @@ void taskTela(void* param) {
   digitalWrite(TFT_PWR, LOW);
   delay(20);
   lcd.init();
-  lcd.setRotation(1);
+  lcd.setRotation(3);   // REV3: 180 graus (a imagem vinha de cabeca pra baixo com 1)
   lv_init();
   lv_disp_draw_buf_init(&draw_buf, buf1, NULL, LV_W * 20);
   static lv_disp_drv_t dd;
