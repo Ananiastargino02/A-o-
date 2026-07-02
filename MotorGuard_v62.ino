@@ -2654,7 +2654,7 @@ void taskTela(void* param) {
   digitalWrite(TFT_PWR, LOW);
   delay(20);
   lcd.init();
-  lcd.setRotation(2);   // REV3: 90 graus (se ficar espelhada/invertida, use 0)
+  lcd.setRotation(6);   // REV3: rotacao 2 + espelho (LovyanGFX: 4..7 = espelhado). Se espelhar errado, tente 2/4/0
   lv_init();
   lv_disp_draw_buf_init(&draw_buf, buf1, NULL, LV_W * 20);
   static lv_disp_drv_t dd;
