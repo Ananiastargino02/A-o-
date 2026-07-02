@@ -1818,8 +1818,8 @@ public:
     { auto c = _panel.config();
       c.pin_cs = 5; c.pin_rst = 4; c.pin_busy = -1;
       c.panel_width = 240; c.panel_height = 320;
-      // ST7789 pede invert = true p/ fundo escuro/cores certas. Se vier branco, use false.
-      c.invert = true; c.rgb_order = false; _panel.config(c); }
+      // Neste painel ST7789 o fundo escuro sai com invert = false.
+      c.invert = false; c.rgb_order = false; _panel.config(c); }
     setPanel(&_panel);
   }
 };
