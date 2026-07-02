@@ -2656,7 +2656,10 @@ void taskTela(void* param) {
   digitalWrite(TFT_PWR, LOW);
   delay(20);
   lcd.init();
-  lcd.setRotation(6);   // REV3: rotacao 2 + espelho (LovyanGFX: 4..7 = espelhado). Se espelhar errado, tente 2/4/0
+  // A interface e PAISAGEM (320x240) -> a rotacao TEM que ser paisagem: 1, 3, 5 ou 7.
+  // (0/2/4/6 sao retrato e deixam metade da tela com "chuvisco" = memoria nao escrita.)
+  // 3 = paisagem de cabeca pra cima. Se ficar de cabeca pra baixo use 1; se espelhado use 7 (ou 5).
+  lcd.setRotation(3);
   lv_init();
   lv_disp_draw_buf_init(&draw_buf, buf1, NULL, LV_W * 20);
   static lv_disp_drv_t dd;
