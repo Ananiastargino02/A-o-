@@ -60,6 +60,7 @@
 #define TFT_CS     5
 #define TFT_DC     2
 #define TFT_RST    4
+#define TFT_PWR    25    // REV3: liga a alimentacao do display (MOSFET). ATIVO BAIXO = liga
 #define CAN_TX_PIN GPIO_NUM_26
 #define CAN_RX_PIN GPIO_NUM_27
 #define VW_CLUSTER_REQ 0x714
@@ -69,7 +70,16 @@
 #define BTN_ANT    13
 #define BTN_MENU   14
 #define BTN_PRX    19
+#define BTN_ENTER  32    // REV3: 4o botao (OK/confirmar)
 #define DEBOUNCE_MS 50
+
+// ===== REV3: pinos reservados p/ K-line (ISO 9141/KWP) e RTC INT =====
+// (o transceiver e o hardware ja existem na placa; o protocolo K-line no
+//  firmware ainda sera implementado — por enquanto so as definicoes.)
+#define K_TX_PIN   33    // L9637D TX  (UART p/ K-line)
+#define K_RX_PIN   39    // L9637D RX  (SENSOR_VN, input-only)
+#define L_RX_PIN   34    // L-line RX  (input-only)
+#define RTC_INT_PIN 35   // DS3231 INT/SQW (input-only)
 
 // ===== ADC tensao da bateria (independente do CAN) =====
 #define PIN_VBAT    36                               // SENSOR_VP / ADC1_CH0
@@ -1797,7 +1807,7 @@ static lv_disp_draw_buf_t draw_buf;
 static lv_color_t buf1[LV_W * 20];
 
 class LGFX : public lgfx::LGFX_Device {
-  lgfx::Panel_ST7789 _panel; lgfx::Bus_SPI _bus;
+  lgfx::Panel_ILI9341 _panel; lgfx::Bus_SPI _bus;   // REV3: display GMT028 usa ILI9341 (era ST7789)
 public:
   LGFX() {
     { auto c = _bus.config();
@@ -1808,7 +1818,8 @@ public:
     { auto c = _panel.config();
       c.pin_cs = 5; c.pin_rst = 4; c.pin_busy = -1;
       c.panel_width = 240; c.panel_height = 320;
-      c.invert = true; c.rgb_order = false; _panel.config(c); }
+      // ILI9341: invert = false (se as cores sairem invertidas, troque p/ true)
+      c.invert = false; c.rgb_order = false; _panel.config(c); }
     setPanel(&_panel);
   }
 };
@@ -2638,6 +2649,10 @@ void construirPagina(uint8_t pag) {
 // ============================================================
 void taskTela(void* param) {
   Serial.println("[Task Tela] LVGL iniciada");
+  // REV3: liga a alimentacao do display (MOSFET Q3). ATIVO BAIXO = liga.
+  pinMode(TFT_PWR, OUTPUT);
+  digitalWrite(TFT_PWR, LOW);
+  delay(20);
   lcd.init();
   lcd.setRotation(1);
   lv_init();
@@ -2990,28 +3005,92 @@ static void ajustaDiaValido() {
   if (ajuste_dia < 1)    ajuste_dia = 1;
 }
 
+// Acao de OK/confirmar — usada pelo MENU (clique curto) e pelo botao ENTER (Rev3).
+static void botaoOK() {
+  Serial.printf("[BTN] OK (pag=%d, modo=%d)\n", pagina_atual, nav_modo);
+  if (manut_confirma_reset) {
+    if (manut_confirma_selecionado == 0) resetarItem(item_manut_selecionado);
+    manut_confirma_reset = false;
+  } else if (sistema_confirma_zerar) {
+    if (sistema_confirma_selecionado == 0) formatarHodometro();
+    sistema_confirma_zerar = false;
+  } else if (pagina_atual == 4 && nav_modo == NAV_MODO_EDICAO) {
+    if (ajuste_estado >= AJUSTE_ESTADO_DIA && ajuste_estado < AJUSTE_ESTADO_SEG) {
+      ajuste_estado++;
+    } else if (ajuste_estado == AJUSTE_ESTADO_SEG) {
+      ajuste_estado = AJUSTE_ESTADO_SALVAR;
+    } else if (ajuste_estado == AJUSTE_ESTADO_SALVAR) {
+      ajustaDiaValido();   // ultima checagem antes de gravar no RTC
+      rtcAdjust(DateTime(2000 + ajuste_ano, ajuste_mes, ajuste_dia,
+                         ajuste_hora, ajuste_min, ajuste_seg));
+      hora_nao_ajustada = false;
+      ajuste_estado = AJUSTE_ESTADO_MENU;
+      nav_modo = NAV_MODO_VISUALIZACAO;
+    }
+  } else if (nav_modo == NAV_MODO_VISUALIZACAO) {
+    if (pagina_atual == 1) {
+      nav_modo = NAV_MODO_EDICAO;
+    } else if (pagina_atual == 3) {
+      nav_modo = NAV_MODO_EDICAO;
+      item_manut_selecionado = 0;
+      resetCache();
+    } else if (pagina_atual == 4) {
+      if (xSemaphoreTake(mutex_hora, pdMS_TO_TICKS(100)) == pdTRUE) {
+        ajuste_dia = data_dia; ajuste_mes = data_mes; ajuste_ano = (uint8_t)(data_ano - 2000);
+        ajuste_hora = hora_h; ajuste_min = hora_m; ajuste_seg = hora_s;
+        xSemaphoreGive(mutex_hora);
+      }
+      ajuste_estado = AJUSTE_ESTADO_DIA;
+      nav_modo = NAV_MODO_EDICAO;
+    } else if (pagina_atual == 2) {
+      pagina_atual = (pagina_atual + 1) % TOTAL_PAGINAS;
+    }
+  } else {
+    if (pagina_atual == 1) {
+      switch (diag_estado) {
+        case DIAG_ESTADO_MENU:
+          if (diag_menu_selecionado == 0) { diag_estado = DIAG_ESTADO_LENDO; diag_solicitar_leitura = true; }
+          else if (diag_menu_selecionado == 1) { diag_estado = DIAG_ESTADO_CONFIRMAR; diag_confirma_selecionado = 1; }
+          else { nav_modo = NAV_MODO_VISUALIZACAO; }
+          break;
+        case DIAG_ESTADO_RESULTADO: diag_estado = DIAG_ESTADO_MENU; break;
+        case DIAG_ESTADO_CONFIRMAR:
+          if (diag_confirma_selecionado == 0) { diag_estado = DIAG_ESTADO_APAGANDO; diag_solicitar_apagar = true; }
+          else diag_estado = DIAG_ESTADO_MENU;
+          break;
+        case DIAG_ESTADO_APAGADO_OK: diag_estado = DIAG_ESTADO_MENU; break;
+      }
+    } else if (pagina_atual == 3) {
+      nav_modo = NAV_MODO_VISUALIZACAO;
+    }
+  }
+}
+
 void taskBotoes(void* param) {
   Serial.println("[Task Botoes] iniciada");
   pinMode(BTN_ANT, INPUT_PULLUP);
   pinMode(BTN_MENU, INPUT_PULLUP);
   pinMode(BTN_PRX, INPUT_PULLUP);
-  bool prev_ant = HIGH, prev_menu = HIGH, prev_prx = HIGH;
-  uint32_t ultimo_debounce = 0, ultimo_menu = 0, menu_pressionado_em = 0;
+  pinMode(BTN_ENTER, INPUT_PULLUP);   // REV3: 4o botao
+  bool prev_ant = HIGH, prev_menu = HIGH, prev_prx = HIGH, prev_enter = HIGH;
+  uint32_t ultimo_debounce = 0, ultimo_menu = 0, menu_pressionado_em = 0, ultimo_enter = 0;
   bool menu_longpress_disparado = false;
   for (;;) {
     hb_botoes = millis();
     bool agora_ant = digitalRead(BTN_ANT);
     bool agora_menu = digitalRead(BTN_MENU);
     bool agora_prx = digitalRead(BTN_PRX);
+    bool agora_enter = digitalRead(BTN_ENTER);
     uint32_t t = millis();
 
     if (estadoAtual == STANDBY) {
-      if (prev_menu == HIGH && agora_menu == LOW) pedido_acordar = true;
-      prev_ant = agora_ant; prev_menu = agora_menu; prev_prx = agora_prx;
+      // MENU ou ENTER acordam o aparelho
+      if ((prev_menu == HIGH && agora_menu == LOW) || (prev_enter == HIGH && agora_enter == LOW)) pedido_acordar = true;
+      prev_ant = agora_ant; prev_menu = agora_menu; prev_prx = agora_prx; prev_enter = agora_enter;
       vTaskDelay(pdMS_TO_TICKS(50));
       continue;
     }
-    if (agora_ant == LOW || agora_menu == LOW || agora_prx == LOW) contando_pra_sleep = false;
+    if (agora_ant == LOW || agora_menu == LOW || agora_prx == LOW || agora_enter == LOW) contando_pra_sleep = false;
 
     if (prev_menu == HIGH && agora_menu == LOW) { menu_pressionado_em = t; menu_longpress_disparado = false; Serial.println("[BTN] MENU pressionado"); }
     if (agora_menu == LOW && !menu_longpress_disparado && t - menu_pressionado_em >= LONGPRESS_MS) {
@@ -3032,66 +3111,15 @@ void taskBotoes(void* param) {
 
     if (prev_menu == LOW && agora_menu == HIGH) {
       if (!menu_longpress_disparado && t - ultimo_menu > DEBOUNCE_MS) {
-        Serial.printf("[BTN] MENU OK (pag=%d, modo=%d)\n", pagina_atual, nav_modo);
-        if (manut_confirma_reset) {
-          if (manut_confirma_selecionado == 0) resetarItem(item_manut_selecionado);
-          manut_confirma_reset = false;
-        } else if (sistema_confirma_zerar) {
-          if (sistema_confirma_selecionado == 0) formatarHodometro();
-          sistema_confirma_zerar = false;
-        } else if (pagina_atual == 4 && nav_modo == NAV_MODO_EDICAO) {
-          if (ajuste_estado >= AJUSTE_ESTADO_DIA && ajuste_estado < AJUSTE_ESTADO_SEG) {
-            ajuste_estado++;
-          } else if (ajuste_estado == AJUSTE_ESTADO_SEG) {
-            ajuste_estado = AJUSTE_ESTADO_SALVAR;
-          } else if (ajuste_estado == AJUSTE_ESTADO_SALVAR) {
-            ajustaDiaValido();   // ultima checagem antes de gravar no RTC
-            rtcAdjust(DateTime(2000 + ajuste_ano, ajuste_mes, ajuste_dia,
-                               ajuste_hora, ajuste_min, ajuste_seg));
-            hora_nao_ajustada = false;
-            ajuste_estado = AJUSTE_ESTADO_MENU;
-            nav_modo = NAV_MODO_VISUALIZACAO;
-          }
-        } else if (nav_modo == NAV_MODO_VISUALIZACAO) {
-          if (pagina_atual == 1) {
-            nav_modo = NAV_MODO_EDICAO;
-          } else if (pagina_atual == 3) {
-            nav_modo = NAV_MODO_EDICAO;
-            item_manut_selecionado = 0;
-            resetCache();
-          } else if (pagina_atual == 4) {
-            if (xSemaphoreTake(mutex_hora, pdMS_TO_TICKS(100)) == pdTRUE) {
-              ajuste_dia = data_dia; ajuste_mes = data_mes; ajuste_ano = (uint8_t)(data_ano - 2000);
-              ajuste_hora = hora_h; ajuste_min = hora_m; ajuste_seg = hora_s;
-              xSemaphoreGive(mutex_hora);
-            }
-            ajuste_estado = AJUSTE_ESTADO_DIA;
-            nav_modo = NAV_MODO_EDICAO;
-          } else if (pagina_atual == 2) {
-            pagina_atual = (pagina_atual + 1) % TOTAL_PAGINAS;
-          }
-        } else {
-          if (pagina_atual == 1) {
-            switch (diag_estado) {
-              case DIAG_ESTADO_MENU:
-                if (diag_menu_selecionado == 0) { diag_estado = DIAG_ESTADO_LENDO; diag_solicitar_leitura = true; }
-                else if (diag_menu_selecionado == 1) { diag_estado = DIAG_ESTADO_CONFIRMAR; diag_confirma_selecionado = 1; }
-                else { nav_modo = NAV_MODO_VISUALIZACAO; }
-                break;
-              case DIAG_ESTADO_RESULTADO: diag_estado = DIAG_ESTADO_MENU; break;
-              case DIAG_ESTADO_CONFIRMAR:
-                if (diag_confirma_selecionado == 0) { diag_estado = DIAG_ESTADO_APAGANDO; diag_solicitar_apagar = true; }
-                else diag_estado = DIAG_ESTADO_MENU;
-                break;
-              case DIAG_ESTADO_APAGADO_OK: diag_estado = DIAG_ESTADO_MENU; break;
-            }
-          } else if (pagina_atual == 3) {
-            nav_modo = NAV_MODO_VISUALIZACAO;
-          }
-        }
+        botaoOK();
         ultimo_menu = t;
       }
       menu_longpress_disparado = false;
+    }
+
+    // REV3: botao ENTER = mesma acao de OK/confirmar (clique)
+    if (prev_enter == LOW && agora_enter == HIGH) {
+      if (t - ultimo_enter > DEBOUNCE_MS) { botaoOK(); ultimo_enter = t; }
     }
 
     if (t - ultimo_debounce > DEBOUNCE_MS) {
@@ -3167,7 +3195,7 @@ void taskBotoes(void* param) {
       }
     }
 
-    prev_ant = agora_ant; prev_menu = agora_menu; prev_prx = agora_prx;
+    prev_ant = agora_ant; prev_menu = agora_menu; prev_prx = agora_prx; prev_enter = agora_enter;
     vTaskDelay(pdMS_TO_TICKS(20));
   }
 }
