@@ -1807,21 +1807,19 @@ static lv_disp_draw_buf_t draw_buf;
 static lv_color_t buf1[LV_W * 20];
 
 class LGFX : public lgfx::LGFX_Device {
-  lgfx::Panel_ILI9341 _panel; lgfx::Bus_SPI _bus;   // REV3: display GMT028 usa ILI9341 (era ST7789)
+  lgfx::Panel_ST7789 _panel; lgfx::Bus_SPI _bus;   // REV3: volta pro ST7789 (driver que funcionava). O ILI9341 gerava corrupcao (chuvisco).
 public:
   LGFX() {
     { auto c = _bus.config();
       c.spi_host = VSPI_HOST; c.spi_mode = 0;
-      // REV3: 10MHz = valor bem seguro p/ isolar chuvisco. Se a imagem ficar LIMPA,
-      // pode subir p/ 20/27/40MHz. Se continuar chuvisco a 10MHz+paisagem = HARDWARE (solda/FPC).
-      c.freq_write = 10000000; c.freq_read = 8000000;
+      c.freq_write = 20000000; c.freq_read = 16000000;
       c.pin_sclk = 18; c.pin_mosi = 23; c.pin_miso = -1; c.pin_dc = 2;
-      c.dma_channel = 0; _bus.config(c); _panel.setBus(&_bus); }   // REV3: DMA off p/ testar se o chuvisco e do DMA
+      c.dma_channel = 1; _bus.config(c); _panel.setBus(&_bus); }
     { auto c = _panel.config();
       c.pin_cs = 5; c.pin_rst = 4; c.pin_busy = -1;
       c.panel_width = 240; c.panel_height = 320;
-      // REV3: este painel precisa de invert = false p/ fundo escuro (true deixava branco)
-      c.invert = false; c.rgb_order = false; _panel.config(c); }
+      // ST7789 pede invert = true p/ fundo escuro/cores certas. Se vier branco, use false.
+      c.invert = true; c.rgb_order = false; _panel.config(c); }
     setPanel(&_panel);
   }
 };
