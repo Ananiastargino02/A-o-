@@ -1867,12 +1867,18 @@ void taskCAN(void* param) {
       }
     }
     // ===== Entrada em standby: tensao baixa E motor parado (rpm 0), sustentado por 40s =====
+    // DESLIGADO TEMPORARIAMENTE p/ testes (a leitura VBAT da Rev3 esta lendo ~4V e mandava
+    // o aparelho dormir achando "carro desligado"). Reativar quando o VBAT estiver calibrado.
+#if 0
     if (ultimo.tensao > 0 && ultimo.tensao < TENSAO_WAKE && ultimo.rpm <= 0) {
       if (!contando_pra_sleep) { contando_pra_sleep = true; inicio_rpm_baixo = millis(); }
       else if (millis() - inicio_rpm_baixo >= TEMPO_STANDBY_MS) { entrarEmStandby(); continue; }
     } else {
       contando_pra_sleep = false;
     }
+#else
+    contando_pra_sleep = false;
+#endif
     ciclo++;
     ultimo_heartbeat = millis();
     vTaskDelay(pdMS_TO_TICKS(400));
