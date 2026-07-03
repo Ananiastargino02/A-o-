@@ -1493,8 +1493,9 @@ void runProbeM22() {
 HardwareSerial KLine(1);
 volatile bool kline_ok = false;
 uint8_t kline_kb1 = 0, kline_kb2 = 0;
-// header do pedido: ISO9141 = 68 6A F1 ; KWP2000 = C2 33 F1
-uint8_t kline_h0 = 0x68, kline_h1 = 0x6A, kline_h2 = 0xF1;
+uint8_t kline_ecu = 0x11;   // endereco do ECU (capturado no init)
+uint8_t kline_tgt = 0x33;   // alvo do pedido (descoberto no diagnostico)
+uint8_t kline_fmt = 0;      // 0 = "Cx tgt src.." ; 1 = "80 tgt src len.."
 
 static uint8_t klineCS(const uint8_t* d, int n) { uint8_t s = 0; for (int i = 0; i < n; i++) s += d[i]; return s; }
 
@@ -1538,8 +1539,8 @@ bool klineInit5baud() {
   KLine.write(inv); KLine.flush(); klineRead(80);   // manda KB2 invertido, descarta echo
   int ack = klineRead(120);                          // ECU responde 0xCC (0x33 invertido)
   Serial.printf("[KL] 5-baud OK: KB1=0x%02X KB2=0x%02X ack=0x%02X\n", kb1, kb2, ack & 0xFF);
-  if (kb2 == 0x8F) { kline_h0 = 0xC2; kline_h1 = 0x33; kline_h2 = 0xF1; Serial.println("[KL] protocolo KWP2000"); }
-  else             { kline_h0 = 0x68; kline_h1 = 0x6A; kline_h2 = 0xF1; Serial.println("[KL] protocolo ISO9141"); }
+  if (kb2 == 0x8F) { kline_fmt = 0; kline_tgt = 0x33; Serial.println("[KL] protocolo KWP2000"); }
+  else             { kline_fmt = 2; kline_tgt = 0x6A; Serial.println("[KL] protocolo ISO9141"); }  // fmt 2 = ISO9141 (68 6A F1)
   kline_ok = true; return true;
 }
 
@@ -1559,29 +1560,43 @@ bool klineInitFast() {
   Serial.print("[KL] resp fast:"); for (int i = 0; i < n; i++) Serial.printf(" %02X", resp[i]); Serial.println();
   if (n >= 6 && resp[3] == 0xC1) {
     kline_kb1 = resp[4]; kline_kb2 = resp[5];
-    kline_h0 = 0xC2; kline_h1 = 0x33; kline_h2 = 0xF1;
-    Serial.printf("[KL] fast init OK: KB1=0x%02X KB2=0x%02X\n", kline_kb1, kline_kb2);
+    kline_ecu = resp[2];              // endereco fisico do ECU (ex.: 0x11)
+    Serial.printf("[KL] fast init OK: KB1=0x%02X KB2=0x%02X ECU=0x%02X\n", kline_kb1, kline_kb2, kline_ecu);
     kline_ok = true; return true;
   }
   Serial.println("[KL] fast init FALHOU"); return false;
 }
 
-// le um PID mode01. retorna nº de bytes de dados em out (ou -1)
-int klineReadPID(uint8_t pid, uint8_t* out, int maxout) {
+// Monta e envia um pedido mode01 PID com um formato/alvo dados, logando tudo.
+// fmt 0: "Cx tgt F1 01 pid cs"     (KWP2000, comprimento no fmt)
+// fmt 1: "80 tgt F1 02 01 pid cs"  (KWP2000, comprimento em byte separado)
+// fmt 2: "68 6A F1 01 pid cs"      (ISO 9141-2)
+// retorna nº de bytes de dados em out (ou -1)
+int klinePID(uint8_t pid, uint8_t fmt, uint8_t tgt, uint8_t* out, int maxout, bool log) {
   if (!kline_ok) return -1;
-  uint8_t req[6] = {kline_h0, kline_h1, kline_h2, 0x01, pid, 0}; req[5] = klineCS(req, 5);
-  klineSend(req, 6);
-  uint8_t resp[16]; int n = 0; uint32_t t0 = millis();
-  while (n < 12 && millis() - t0 < 300) { int b = klineRead(70); if (b < 0) break; resp[n++] = b; }
+  uint8_t req[8]; int rn = 0;
+  if (fmt == 2) { req[rn++] = 0x68; req[rn++] = 0x6A; req[rn++] = 0xF1; req[rn++] = 0x01; req[rn++] = pid; }
+  else if (fmt == 1) { req[rn++] = 0x80; req[rn++] = tgt; req[rn++] = 0xF1; req[rn++] = 0x02; req[rn++] = 0x01; req[rn++] = pid; }
+  else { req[rn++] = 0xC0 | 2; req[rn++] = tgt; req[rn++] = 0xF1; req[rn++] = 0x01; req[rn++] = pid; }
+  req[rn] = klineCS(req, rn); rn++;
+  if (log) { Serial.printf("[KL] req(f%d t%02X):", fmt, tgt); for (int i = 0; i < rn; i++) Serial.printf(" %02X", req[i]); Serial.println(); }
+  klineSend(req, rn);
+  uint8_t resp[24]; int n = 0; uint32_t t0 = millis();
+  while (n < (int)sizeof(resp) && millis() - t0 < 400) { int b = klineRead(90); if (b < 0) break; resp[n++] = b; }
+  if (log) { Serial.print("[KL]  resp:"); if (n == 0) Serial.print(" (nada)"); for (int i = 0; i < n; i++) Serial.printf(" %02X", resp[i]); Serial.println(); }
   for (int i = 0; i + 1 < n; i++) {
     if (resp[i] == 0x41 && resp[i + 1] == pid) {
-      int ndata = n - (i + 2) - 1;              // remove header+41+pid e o checksum final
-      if (ndata < 0) ndata = 0; if (ndata > maxout) ndata = maxout;
-      for (int j = 0; j < ndata; j++) out[j] = resp[i + 2 + j];
-      return ndata;
+      int nd = n - (i + 2) - 1; if (nd < 0) nd = 0; if (nd > maxout) nd = maxout;
+      for (int j = 0; j < nd; j++) out[j] = resp[i + 2 + j];
+      return nd;
     }
   }
   return -1;
+}
+
+// usa o formato/alvo ja descobertos
+int klineReadPID(uint8_t pid, uint8_t* out, int maxout) {
+  return klinePID(pid, kline_fmt, kline_tgt, out, maxout, false);
 }
 
 // Diagnostico completo pelo Serial (comando "KLINE")
@@ -1590,17 +1605,23 @@ void klineDiagnostico() {
   kline_ok = false;
   bool ok = klineInitFast();
   if (!ok) { delay(500); ok = klineInit5baud(); }
-  if (!ok) { Serial.println("[KL] Nenhum init respondeu. Confira: ignicao ligada? pino 7 do OBD? EN do L9637D em nivel alto? pull-up 510R?"); Serial.println("========================\n"); return; }
-  uint8_t d[8]; int r;
-  r = klineReadPID(0x0C, d, 8);  // RPM
-  if (r >= 2) Serial.printf("[KL] RPM = %d\n", ((d[0] * 256) + d[1]) / 4);
-  else Serial.println("[KL] RPM sem resposta");
-  r = klineReadPID(0x0D, d, 8);  // velocidade
-  if (r >= 1) Serial.printf("[KL] VEL = %d km/h\n", d[0]);
-  else Serial.println("[KL] VEL sem resposta");
-  r = klineReadPID(0x05, d, 8);  // temp
-  if (r >= 1) Serial.printf("[KL] TEMP = %d C\n", d[0] - 40);
-  else Serial.println("[KL] TEMP sem resposta");
+  if (!ok) { Serial.println("[KL] Nenhum init respondeu. Confira: ignicao ligada? pino 7 OBD? EN do L9637D alto? pull-up 510R?"); Serial.println("========================\n"); return; }
+  delay(60);   // P3: tempo minimo antes do 1o pedido
+  uint8_t d[8];
+  // procura o formato/alvo que responde (testa variacoes com RPM = 0x0C)
+  struct { uint8_t fmt, tgt; } tent[] = { {0,0x33}, {0,kline_ecu}, {1,0x33}, {1,kline_ecu}, {2,0x6A} };
+  int achou = -1;
+  for (int i = 0; i < 5; i++) {
+    Serial.printf("[KL] tentativa %d (fmt%d tgt%02X):\n", i, tent[i].fmt, tent[i].tgt);
+    int r = klinePID(0x0C, tent[i].fmt, tent[i].tgt, d, 8, true);
+    if (r >= 2) { kline_fmt = tent[i].fmt; kline_tgt = tent[i].tgt; achou = i;
+      Serial.printf("[KL] >>> FUNCIONOU! RPM=%d (fmt%d tgt%02X)\n", ((d[0]*256)+d[1])/4, kline_fmt, kline_tgt); break; }
+    delay(60);
+  }
+  if (achou < 0) { Serial.println("[KL] nenhum formato respondeu PID. Manda o log que eu ajusto."); Serial.println("========================\n"); return; }
+  int r;
+  r = klineReadPID(0x0D, d, 8); if (r >= 1) Serial.printf("[KL] VEL = %d km/h\n", d[0]); else Serial.println("[KL] VEL sem resposta");
+  r = klineReadPID(0x05, d, 8); if (r >= 1) Serial.printf("[KL] TEMP = %d C\n", d[0] - 40); else Serial.println("[KL] TEMP sem resposta");
   Serial.println("========================\n");
 }
 
