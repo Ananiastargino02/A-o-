@@ -1619,7 +1619,7 @@ static void klineLerRestante() {
 }
 
 // Diagnostico completo pelo Serial (comando "KLINE") - KWP primeiro (Montana conecta por fast init)
-void klineDiagnostico() {
+static void klineDiagBody() {
   Serial.println("\n===== TESTE K-LINE =====");
   uint8_t d[8];
 
@@ -1662,6 +1662,16 @@ void klineDiagnostico() {
 
   Serial.println("[KL] Nenhum caminho leu mode01. (Se o PID 00 tambem deu 7F = mode01 nao existe nesse ECU -> EOBD provavelmente no CAN.)");
   Serial.println("========================\n");
+}
+
+// Pausa a tarefa do CAN durante o teste K-line (o driver CAN reinstalando
+// atrapalhava o timing do init). Retoma no fim.
+void klineDiagnostico() {
+  TaskHandle_t hcan = xTaskGetHandle("CAN");
+  if (hcan) { vTaskSuspend(hcan); twai_stop(); }   // silencia o CAN
+  vTaskDelay(pdMS_TO_TICKS(100));
+  klineDiagBody();
+  if (hcan) { twai_start(); vTaskResume(hcan); }    // religa o CAN
 }
 
 // ============================================================
