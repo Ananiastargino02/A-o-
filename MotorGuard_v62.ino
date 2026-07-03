@@ -1486,6 +1486,125 @@ void runProbeM22() {
 }
 
 // ============================================================
+//  K-LINE (ISO 9141-2 / ISO 14230-4 KWP2000) - carros antigos (ex.: Peugeot 206)
+//  Modulo de TESTE: use o comando de Serial "KLINE" para diagnosticar.
+//  Hardware: L9637D. K_TX=GPIO33, K_RX=GPIO39 (via UART1), a 10400 baud 8N1.
+// ============================================================
+HardwareSerial KLine(1);
+volatile bool kline_ok = false;
+uint8_t kline_kb1 = 0, kline_kb2 = 0;
+// header do pedido: ISO9141 = 68 6A F1 ; KWP2000 = C2 33 F1
+uint8_t kline_h0 = 0x68, kline_h1 = 0x6A, kline_h2 = 0xF1;
+
+static uint8_t klineCS(const uint8_t* d, int n) { uint8_t s = 0; for (int i = 0; i < n; i++) s += d[i]; return s; }
+
+// le 1 byte com timeout (ms); -1 se nao veio
+static int klineRead(uint32_t to_ms) {
+  uint32_t t0 = millis();
+  while (millis() - t0 < to_ms) { if (KLine.available()) return (uint8_t)KLine.read(); vTaskDelay(1); }
+  return -1;
+}
+
+// envia bytes descartando o ECHO (K-line e half-duplex: o que sai volta no RX)
+static void klineSend(const uint8_t* d, int n) {
+  for (int i = 0; i < n; i++) {
+    while (KLine.available()) KLine.read();   // limpa RX
+    KLine.write(d[i]); KLine.flush();
+    klineRead(80);                            // descarta o echo do proprio byte
+    delay(6);                                 // P4: intervalo entre bytes
+  }
+}
+
+// Slow init 5-baud (endereco 0x33) - ISO 9141-2 / ISO 14230 slow
+bool klineInit5baud() {
+  Serial.println("[KL] tentando 5-baud init (0x33)...");
+  KLine.end();
+  pinMode(K_TX_PIN, OUTPUT);
+  digitalWrite(K_TX_PIN, HIGH); delay(350);        // idle (W5)
+  uint8_t addr = 0x33;
+  digitalWrite(K_TX_PIN, LOW);  delay(200);        // start bit
+  for (int i = 0; i < 8; i++) { digitalWrite(K_TX_PIN, (addr >> i) & 1); delay(200); }  // LSB first
+  digitalWrite(K_TX_PIN, HIGH); delay(200);        // stop bit
+  KLine.begin(10400, SERIAL_8N1, K_RX_PIN, K_TX_PIN);
+  int sync = klineRead(300);
+  Serial.printf("[KL] sync=0x%02X (esperado 0x55)\n", sync & 0xFF);
+  if (sync != 0x55) { Serial.println("[KL] 5-baud FALHOU (sem 0x55)"); return false; }
+  int kb1 = klineRead(60), kb2 = klineRead(60);
+  if (kb1 < 0 || kb2 < 0) { Serial.println("[KL] sem key bytes"); return false; }
+  kline_kb1 = kb1; kline_kb2 = kb2;
+  delay(30);
+  uint8_t inv = ~(uint8_t)kb2;
+  while (KLine.available()) KLine.read();
+  KLine.write(inv); KLine.flush(); klineRead(80);   // manda KB2 invertido, descarta echo
+  int ack = klineRead(120);                          // ECU responde 0xCC (0x33 invertido)
+  Serial.printf("[KL] 5-baud OK: KB1=0x%02X KB2=0x%02X ack=0x%02X\n", kb1, kb2, ack & 0xFF);
+  if (kb2 == 0x8F) { kline_h0 = 0xC2; kline_h1 = 0x33; kline_h2 = 0xF1; Serial.println("[KL] protocolo KWP2000"); }
+  else             { kline_h0 = 0x68; kline_h1 = 0x6A; kline_h2 = 0xF1; Serial.println("[KL] protocolo ISO9141"); }
+  kline_ok = true; return true;
+}
+
+// Fast init (ISO 14230-4 KWP2000)
+bool klineInitFast() {
+  Serial.println("[KL] tentando fast init (KWP2000)...");
+  KLine.end();
+  pinMode(K_TX_PIN, OUTPUT);
+  digitalWrite(K_TX_PIN, HIGH); delay(350);
+  digitalWrite(K_TX_PIN, LOW);  delay(25);          // WUP: 25ms low
+  digitalWrite(K_TX_PIN, HIGH); delay(25);          // 25ms high
+  KLine.begin(10400, SERIAL_8N1, K_RX_PIN, K_TX_PIN);
+  uint8_t req[5] = {0xC1, 0x33, 0xF1, 0x81, 0}; req[4] = klineCS(req, 4);  // StartCommunication
+  klineSend(req, 5);
+  uint8_t resp[16]; int n = 0; uint32_t t0 = millis();
+  while (n < 7 && millis() - t0 < 300) { int b = klineRead(60); if (b < 0) break; resp[n++] = b; }
+  Serial.print("[KL] resp fast:"); for (int i = 0; i < n; i++) Serial.printf(" %02X", resp[i]); Serial.println();
+  if (n >= 6 && resp[3] == 0xC1) {
+    kline_kb1 = resp[4]; kline_kb2 = resp[5];
+    kline_h0 = 0xC2; kline_h1 = 0x33; kline_h2 = 0xF1;
+    Serial.printf("[KL] fast init OK: KB1=0x%02X KB2=0x%02X\n", kline_kb1, kline_kb2);
+    kline_ok = true; return true;
+  }
+  Serial.println("[KL] fast init FALHOU"); return false;
+}
+
+// le um PID mode01. retorna nº de bytes de dados em out (ou -1)
+int klineReadPID(uint8_t pid, uint8_t* out, int maxout) {
+  if (!kline_ok) return -1;
+  uint8_t req[6] = {kline_h0, kline_h1, kline_h2, 0x01, pid, 0}; req[5] = klineCS(req, 5);
+  klineSend(req, 6);
+  uint8_t resp[16]; int n = 0; uint32_t t0 = millis();
+  while (n < 12 && millis() - t0 < 300) { int b = klineRead(70); if (b < 0) break; resp[n++] = b; }
+  for (int i = 0; i + 1 < n; i++) {
+    if (resp[i] == 0x41 && resp[i + 1] == pid) {
+      int ndata = n - (i + 2) - 1;              // remove header+41+pid e o checksum final
+      if (ndata < 0) ndata = 0; if (ndata > maxout) ndata = maxout;
+      for (int j = 0; j < ndata; j++) out[j] = resp[i + 2 + j];
+      return ndata;
+    }
+  }
+  return -1;
+}
+
+// Diagnostico completo pelo Serial (comando "KLINE")
+void klineDiagnostico() {
+  Serial.println("\n===== TESTE K-LINE =====");
+  kline_ok = false;
+  bool ok = klineInitFast();
+  if (!ok) { delay(500); ok = klineInit5baud(); }
+  if (!ok) { Serial.println("[KL] Nenhum init respondeu. Confira: ignicao ligada? pino 7 do OBD? EN do L9637D em nivel alto? pull-up 510R?"); Serial.println("========================\n"); return; }
+  uint8_t d[8]; int r;
+  r = klineReadPID(0x0C, d, 8);  // RPM
+  if (r >= 2) Serial.printf("[KL] RPM = %d\n", ((d[0] * 256) + d[1]) / 4);
+  else Serial.println("[KL] RPM sem resposta");
+  r = klineReadPID(0x0D, d, 8);  // velocidade
+  if (r >= 1) Serial.printf("[KL] VEL = %d km/h\n", d[0]);
+  else Serial.println("[KL] VEL sem resposta");
+  r = klineReadPID(0x05, d, 8);  // temp
+  if (r >= 1) Serial.printf("[KL] TEMP = %d C\n", d[0] - 40);
+  else Serial.println("[KL] TEMP sem resposta");
+  Serial.println("========================\n");
+}
+
+// ============================================================
 //  STANDBY (substitui o deep sleep)
 // ============================================================
 bool canAtivo(uint16_t ms) {
@@ -3234,6 +3353,7 @@ void taskSerial(void* param) {
         else if (buf == "DEBUGRESET SIM") { formatarDebugLog(); Serial.println(">>> Debug log limpo"); }
         else if (buf == "DEBUGRESET") Serial.println(">>> Apaga o log de debug. Confirme com: DEBUGRESET SIM");
         else if (buf == "FUEL") { probe_pedir_fuel = true; Serial.println(">>> lendo 0x2F..."); }
+        else if (buf == "KLINE") klineDiagnostico();   // teste K-line (ISO9141/KWP2000)
         else if (buf == "VBAT") {
           // CORRECAO 🟡: uma unica leitura do ADC (antes chamava lerTensaoADC() 2x -> valores diferentes)
           float v = lerTensaoADC();
