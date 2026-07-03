@@ -1599,29 +1599,70 @@ int klineReadPID(uint8_t pid, uint8_t* out, int maxout) {
   return klinePID(pid, kline_fmt, kline_tgt, out, maxout, false);
 }
 
-// Diagnostico completo pelo Serial (comando "KLINE")
-void klineDiagnostico() {
-  Serial.println("\n===== TESTE K-LINE =====");
-  kline_ok = false;
-  bool ok = klineInitFast();
-  if (!ok) { delay(500); ok = klineInit5baud(); }
-  if (!ok) { Serial.println("[KL] Nenhum init respondeu. Confira: ignicao ligada? pino 7 OBD? EN do L9637D alto? pull-up 510R?"); Serial.println("========================\n"); return; }
-  delay(60);   // P3: tempo minimo antes do 1o pedido
-  uint8_t d[8];
-  // procura o formato/alvo que responde (testa variacoes com RPM = 0x0C)
-  struct { uint8_t fmt, tgt; } tent[] = { {0,0x33}, {0,kline_ecu}, {1,0x33}, {1,kline_ecu}, {2,0x6A} };
-  int achou = -1;
-  for (int i = 0; i < 5; i++) {
-    Serial.printf("[KL] tentativa %d (fmt%d tgt%02X):\n", i, tent[i].fmt, tent[i].tgt);
-    int r = klinePID(0x0C, tent[i].fmt, tent[i].tgt, d, 8, true);
-    if (r >= 2) { kline_fmt = tent[i].fmt; kline_tgt = tent[i].tgt; achou = i;
-      Serial.printf("[KL] >>> FUNCIONOU! RPM=%d (fmt%d tgt%02X)\n", ((d[0]*256)+d[1])/4, kline_fmt, kline_tgt); break; }
-    delay(60);
-  }
-  if (achou < 0) { Serial.println("[KL] nenhum formato respondeu PID. Manda o log que eu ajusto."); Serial.println("========================\n"); return; }
-  int r;
+// envia um bloco cru e loga a resposta (p/ diagnostico: sessao, etc.)
+static void klineRaw(const char* nome, const uint8_t* payload, int np, uint8_t tgt) {
+  uint8_t req[10]; int rn = 0;
+  req[rn++] = 0xC0 | np; req[rn++] = tgt; req[rn++] = 0xF1;
+  for (int i = 0; i < np; i++) req[rn++] = payload[i];
+  req[rn] = klineCS(req, rn); rn++;
+  Serial.printf("[KL] %s ->", nome); for (int i = 0; i < rn; i++) Serial.printf(" %02X", req[i]); Serial.println();
+  klineSend(req, rn);
+  uint8_t r[24]; int n = 0; uint32_t t0 = millis();
+  while (n < 24 && millis() - t0 < 400) { int b = klineRead(90); if (b < 0) break; r[n++] = b; }
+  Serial.printf("[KL]  %s resp:", nome); if (n == 0) Serial.print(" (nada)"); for (int i = 0; i < n; i++) Serial.printf(" %02X", r[i]); Serial.println();
+}
+
+static void klineLerRestante() {
+  uint8_t d[8]; int r;
   r = klineReadPID(0x0D, d, 8); if (r >= 1) Serial.printf("[KL] VEL = %d km/h\n", d[0]); else Serial.println("[KL] VEL sem resposta");
   r = klineReadPID(0x05, d, 8); if (r >= 1) Serial.printf("[KL] TEMP = %d C\n", d[0] - 40); else Serial.println("[KL] TEMP sem resposta");
+}
+
+// Diagnostico completo pelo Serial (comando "KLINE") - testa KWP e ISO9141
+void klineDiagnostico() {
+  Serial.println("\n===== TESTE K-LINE =====");
+  uint8_t d[8];
+
+  // ----- Caminho 1: KWP2000 (fast init) -----
+  kline_ok = false;
+  if (klineInitFast()) {
+    delay(60);
+    uint8_t sess[2] = {0x10, 0x81};                 // StartDiagnosticSession padrao
+    klineRaw("session10_81_t33", sess, 2, 0x33);
+    delay(60);
+    uint8_t sess2[2] = {0x10, 0x89};                // sessao OBD (algumas ECUs)
+    klineRaw("session10_89_t33", sess2, 2, 0x33);
+    delay(60);
+    struct { uint8_t fmt, tgt; } tent[] = { {0,0x33}, {0,kline_ecu}, {1,0x33}, {1,kline_ecu} };
+    for (int i = 0; i < 4; i++) {
+      Serial.printf("[KL] KWP mode01 tentativa %d:\n", i);
+      int r = klinePID(0x0C, tent[i].fmt, tent[i].tgt, d, 8, true);
+      if (r >= 2) { kline_fmt = tent[i].fmt; kline_tgt = tent[i].tgt;
+        Serial.printf("[KL] >>> FUNCIONOU KWP! RPM=%d\n", ((d[0]*256)+d[1])/4);
+        klineLerRestante(); Serial.println("========================\n"); return; }
+      delay(60);
+    }
+  }
+
+  // ----- Caminho 2: ISO 9141-2 (5-baud init) - tipico PSA/Peugeot -----
+  Serial.println("[KL] KWP nao deu mode01. Tentando ISO 9141 (5-baud)...");
+  delay(800);
+  kline_ok = false;
+  if (klineInit5baud()) {
+    delay(60);
+    // ISO9141 header 68 6A F1 ; e tambem a variante 33
+    struct { uint8_t fmt, tgt; } tent[] = { {2,0x6A}, {0,0x33}, {1,0x33} };
+    for (int i = 0; i < 3; i++) {
+      Serial.printf("[KL] ISO9141 mode01 tentativa %d:\n", i);
+      int r = klinePID(0x0C, tent[i].fmt, tent[i].tgt, d, 8, true);
+      if (r >= 2) { kline_fmt = tent[i].fmt; kline_tgt = tent[i].tgt;
+        Serial.printf("[KL] >>> FUNCIONOU ISO9141! RPM=%d\n", ((d[0]*256)+d[1])/4);
+        klineLerRestante(); Serial.println("========================\n"); return; }
+      delay(60);
+    }
+  }
+
+  Serial.println("[KL] Nenhum caminho leu mode01. Manda o log completo que eu ajusto o formato/servico.");
   Serial.println("========================\n");
 }
 
