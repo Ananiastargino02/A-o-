@@ -1028,8 +1028,11 @@ uint32_t fcIdDaResposta(uint32_t resp_id, bool extd) {
 }
 
 // (Re)instala o driver TWAI no baud indicado, com checagem de erro
-bool instalarCAN(uint16_t baud) {
-  twai_general_config_t g = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_PIN, CAN_RX_PIN, TWAI_MODE_NORMAL);
+// mode = TWAI_MODE_NORMAL (transmite) ou TWAI_MODE_LISTEN_ONLY (so escuta, nao da ACK).
+// Listen-only e usado na DETECCAO p/ nao perturbar o barramento (evita acender luz de airbag
+// em carros com gateway ou que nem tem CAN).
+bool instalarCAN(uint16_t baud, twai_mode_t mode = TWAI_MODE_NORMAL) {
+  twai_general_config_t g = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_PIN, CAN_RX_PIN, mode);
   g.rx_queue_len = 32;   // barramento cheio (ex.: Cruze) -> fila maior evita perder respostas
   g.tx_queue_len = 10;
   twai_timing_config_t  t500 = TWAI_TIMING_CONFIG_500KBITS();
@@ -1096,13 +1099,23 @@ uint32_t sniffCAN(uint16_t baud, uint16_t ms) {
   return n;
 }
 
-// Tenta 11/500 -> 29/500 -> 11/250 -> 29/250 e trava no que responder
+// Detecta o protocolo SEM perturbar o barramento:
+// 1) escuta em LISTEN-ONLY (nao transmite, nao da ACK) p/ ver se ha CAN naquele baud;
+// 2) SO se houver frames, reinstala em NORMAL e sonda (transmite) o OBD;
+// 3) se nao houver CAN em nenhum baud, NAO transmite nada (fica passivo) -> nao acende airbag.
 bool detectarProtocoloOBD() {
   const uint16_t bauds[] = {500, 250};
   for (int b = 0; b < 2; b++) {
-    if (!instalarCAN(bauds[b])) { Serial.printf("[CAN] falha ao instalar driver em %dk\n", bauds[b]); continue; }
-    delay(150);
-    uint32_t vistos = sniffCAN(bauds[b], 600);   // escuta passiva primeiro
+    // ---- passo 1: escuta passiva (listen-only) ----
+    if (!instalarCAN(bauds[b], TWAI_MODE_LISTEN_ONLY)) { Serial.printf("[CAN] falha listen-only %dk\n", bauds[b]); continue; }
+    delay(120);
+    uint32_t vistos = sniffCAN(bauds[b], 600);
+    twai_stop(); twai_driver_uninstall();
+    if (vistos == 0) { Serial.printf("[CAN] %dk: barramento silencioso (sem CAN aqui)\n", bauds[b]); continue; }
+    // ---- passo 2: viu barramento -> agora sim entra em NORMAL e sonda o OBD ----
+    Serial.printf("[CAN] %dk: %lu frames vistos -> sondando OBD (modo normal)\n", bauds[b], vistos);
+    if (!instalarCAN(bauds[b], TWAI_MODE_NORMAL)) continue;
+    delay(80);
     if (sondaOBD(0x7DF, false)) {
       obd_req_id = 0x7DF; obd_extd = false; obd_resp_min = 0x7E8; obd_resp_max = 0x7EF;
       obd_baud = bauds[b]; obd_ok = true;
@@ -1115,14 +1128,15 @@ bool detectarProtocoloOBD() {
       Serial.printf("[CAN] >>> Protocolo: 29-bit / %dk <<<\n", obd_baud);
       return true;
     }
-    Serial.printf("[CAN] %dk: sem resposta OBD (frames vistos no barramento: %lu)\n", bauds[b], vistos);
-    twai_stop();
-    twai_driver_uninstall();   // reseta o controlador antes do proximo baud
+    Serial.printf("[CAN] %dk: tem barramento mas sem resposta OBD\n", bauds[b]);
+    twai_stop(); twai_driver_uninstall();
   }
-  // Nada detectado: deixa instalado no padrao para nao travar o resto
-  instalarCAN(500);
+  // Nada de CAN: instala em LISTEN-ONLY (passivo) e marca obd_ok=false.
+  // A taskCAN NAO vai transmitir enquanto obd_ok=false -> zero perturbacao (nada de airbag).
+  instalarCAN(500, TWAI_MODE_LISTEN_ONLY);
   obd_req_id = 0x7DF; obd_extd = false; obd_resp_min = 0x7E8; obd_resp_max = 0x7EF; obd_baud = 500;
-  Serial.println("[CAN] Nenhum protocolo respondeu (default 11/500)");
+  obd_ok = false;
+  Serial.println("[CAN] Nenhum CAN detectado -> ficando em LISTEN-ONLY (nao transmite)");
   return false;
 }
 
@@ -1749,7 +1763,7 @@ void taskCAN(void* param) {
   Serial.println("[Task CAN] v2 iniciada");
   debugLog(0, "Task CAN start");
   auto contaPIDs = []() { int n = 0; for (int i = 1; i < 256; i++) if (pid_suportado[i]) n++; return n; };
-  descobrirPIDs();
+  if (obd_ok) descobrirPIDs();   // so descobre PIDs (transmite) se houver CAN de verdade
   uint32_t ultimo_calculo_odo = millis();
   uint32_t ciclo = 0;
   uint32_t ultima_redescoberta = millis();
@@ -1757,6 +1771,22 @@ void taskCAN(void* param) {
   for (;;) {
     // ===== STANDBY: so monitora tensao/botao, CAN desligado =====
     if (estadoAtual == STANDBY) { loopStandby(); continue; }
+
+    // ===== SEM CAN detectado: fica PASSIVO (listen-only). NAO transmite nada -> nao perturba
+    // o barramento (nao acende airbag/luzes). So re-detecta em listen-only a cada 5s. =====
+    if (!obd_ok) {
+      static uint32_t ult_redetect = 0;
+      if (millis() - ult_redetect > 5000) {
+        ult_redetect = millis();
+        if (detectarProtocoloOBD()) { descobrirPIDs(); ultima_redescoberta = millis(); }
+      }
+      ultimo.rpm = 0; ultimo.velocidade = 0;
+      ultimo.tensao = lerTensaoADC();   // so ADC (NAO transmite no CAN)
+      if (xSemaphoreTake(mutex_dados, pdMS_TO_TICKS(50)) == pdTRUE) { dados_publicos = ultimo; xSemaphoreGive(mutex_dados); }
+      ultimo_heartbeat = millis();
+      vTaskDelay(pdMS_TO_TICKS(500));
+      continue;
+    }
 
     if (contaPIDs() == 0 && (millis() - ultima_redescoberta > 3000)) {
       ultima_redescoberta = millis();
