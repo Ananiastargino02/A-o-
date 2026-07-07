@@ -1632,6 +1632,7 @@ static void klineLerRestante() {
   uint8_t d[8]; int r;
   r = klineReadPID(0x0D, d, 8); if (r >= 1) Serial.printf("[KL] VEL = %d km/h\n", d[0]); else Serial.println("[KL] VEL sem resposta");
   r = klineReadPID(0x05, d, 8); if (r >= 1) Serial.printf("[KL] TEMP = %d C\n", d[0] - 40); else Serial.println("[KL] TEMP sem resposta");
+  r = klineReadPID(0x2F, d, 8); if (r >= 1 && d[0] != 0xFF) Serial.printf("[KL] COMB = %d%%\n", (d[0] * 100) / 255); else Serial.println("[KL] COMB nao suportado (0x2F)");
 }
 
 // Diagnostico completo pelo Serial (comando "KLINE") - KWP primeiro (Montana conecta por fast init)
@@ -1805,10 +1806,13 @@ void taskCAN(void* param) {
 
       // ---- K-LINE como fonte de dados do painel ----
       if (kline_ativo) {
+        static uint8_t kciclo = 0;
         bool alguma = false; int r;
         r = klineReadPID(0x0C, d8, 8); if (r >= 2) { ultimo.rpm = ((d8[0]*256)+d8[1])/4; alguma = true; }
         r = klineReadPID(0x0D, d8, 8); if (r >= 1) { ultimo.velocidade = d8[0]; alguma = true; }
         r = klineReadPID(0x05, d8, 8); if (r >= 1) { ultimo.temp_motor = d8[0] - 40; alguma = true; }
+        // combustivel (0x2F) so a cada ~8 ciclos (muda devagar e nem todo carro suporta)
+        if ((kciclo++ & 7) == 0) { r = klineReadPID(0x2F, d8, 8); if (r >= 1 && d8[0] != 0xFF) ultimo.combust = (d8[0] * 100) / 255; }
         ultimo.tensao = lerTensaoADC();
         if (alguma) kfalhas = 0;
         else if (++kfalhas >= 4) { kline_ativo = false; kline_ok = false; Serial.println("[KL] sessao perdida -> vai reiniciar"); }
