@@ -1630,8 +1630,11 @@ static void klineRaw(const char* nome, const uint8_t* payload, int np, uint8_t t
 
 static void klineLerRestante() {
   uint8_t d[8]; int r;
+  delay(55);
   r = klineReadPID(0x0D, d, 8); if (r >= 1) Serial.printf("[KL] VEL = %d km/h\n", d[0]); else Serial.println("[KL] VEL sem resposta");
+  delay(55);
   r = klineReadPID(0x05, d, 8); if (r >= 1) Serial.printf("[KL] TEMP = %d C\n", d[0] - 40); else Serial.println("[KL] TEMP sem resposta");
+  delay(55);
   r = klineReadPID(0x2F, d, 8); if (r >= 1 && d[0] != 0xFF) Serial.printf("[KL] COMB = %d%%\n", (d[0] * 100) / 255); else Serial.println("[KL] COMB nao suportado (0x2F)");
 }
 
@@ -1805,20 +1808,22 @@ void taskCAN(void* param) {
       uint8_t d8[8];
 
       // ---- K-LINE como fonte de dados do painel ----
+      // P3 (~55ms) entre cada pedido: sem essa pausa o ECU perde requisicoes e a
+      // leitura fica instavel ("trava e volta"). Com ela, fica estavel.
       if (kline_ativo) {
         static uint8_t kciclo = 0;
         bool alguma = false; int r;
-        r = klineReadPID(0x0C, d8, 8); if (r >= 2) { ultimo.rpm = ((d8[0]*256)+d8[1])/4; alguma = true; }
-        r = klineReadPID(0x0D, d8, 8); if (r >= 1) { ultimo.velocidade = d8[0]; alguma = true; }
-        r = klineReadPID(0x05, d8, 8); if (r >= 1) { ultimo.temp_motor = d8[0] - 40; alguma = true; }
+        const int P3 = 55;
+        r = klineReadPID(0x0C, d8, 8); if (r >= 2) { ultimo.rpm = ((d8[0]*256)+d8[1])/4; alguma = true; } vTaskDelay(pdMS_TO_TICKS(P3));
+        r = klineReadPID(0x0D, d8, 8); if (r >= 1) { ultimo.velocidade = d8[0]; alguma = true; } vTaskDelay(pdMS_TO_TICKS(P3));
+        r = klineReadPID(0x05, d8, 8); if (r >= 1) { ultimo.temp_motor = d8[0] - 40; alguma = true; } vTaskDelay(pdMS_TO_TICKS(P3));
         // combustivel (0x2F) so a cada ~8 ciclos (muda devagar e nem todo carro suporta)
-        if ((kciclo++ & 7) == 0) { r = klineReadPID(0x2F, d8, 8); if (r >= 1 && d8[0] != 0xFF) ultimo.combust = (d8[0] * 100) / 255; }
+        if ((kciclo++ & 7) == 0) { r = klineReadPID(0x2F, d8, 8); if (r >= 1 && d8[0] != 0xFF) ultimo.combust = (d8[0] * 100) / 255; vTaskDelay(pdMS_TO_TICKS(P3)); }
         ultimo.tensao = lerTensaoADC();
         if (alguma) kfalhas = 0;
-        else if (++kfalhas >= 4) { kline_ativo = false; kline_ok = false; Serial.println("[KL] sessao perdida -> vai reiniciar"); }
+        else if (++kfalhas >= 6) { kline_ativo = false; kline_ok = false; Serial.println("[KL] sessao perdida -> vai reiniciar"); }
         if (xSemaphoreTake(mutex_dados, pdMS_TO_TICKS(50)) == pdTRUE) { dados_publicos = ultimo; xSemaphoreGive(mutex_dados); }
         ultimo_heartbeat = millis();
-        vTaskDelay(pdMS_TO_TICKS(120));
         continue;
       }
 
