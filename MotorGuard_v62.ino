@@ -1507,10 +1507,11 @@ void runProbeM22() {
 // ============================================================
 HardwareSerial KLine(1);
 volatile bool kline_ok = false;
+volatile bool kline_ativo = false;   // K-line e a fonte de dados do painel (sem CAN)
 uint8_t kline_kb1 = 0, kline_kb2 = 0;
 uint8_t kline_ecu = 0x11;   // endereco do ECU (capturado no init)
 uint8_t kline_tgt = 0x33;   // alvo do pedido (descoberto no diagnostico)
-uint8_t kline_fmt = 0;      // 0 = "Cx tgt src.." ; 1 = "80 tgt src len.."
+uint8_t kline_fmt = 0;      // 0 = "Cx tgt src.." ; 1 = "80 tgt src len.." ; 2 = ISO9141
 
 static uint8_t klineCS(const uint8_t* d, int n) { uint8_t s = 0; for (int i = 0; i < n; i++) s += d[i]; return s; }
 
@@ -1689,6 +1690,29 @@ void klineDiagnostico() {
   if (hcan) { twai_start(); vTaskResume(hcan); }    // religa o CAN
 }
 
+// Inicializa o K-line e descobre o formato de leitura (silencioso).
+// true = pronto p/ ler PIDs (kline_fmt/kline_tgt setados). Chamado pela taskCAN.
+bool klineIniciar() {
+  uint8_t d[8];
+  // 1) KWP2000 fast init
+  kline_ok = false;
+  if (klineInitFast()) {
+    delay(60);
+    struct { uint8_t fmt, tgt; } t[] = { {0,0x33}, {1,0x33}, {0,kline_ecu}, {1,kline_ecu} };
+    for (int i = 0; i < 4; i++) { if (klinePID(0x0C, t[i].fmt, t[i].tgt, d, 8, false) >= 2) { kline_fmt = t[i].fmt; kline_tgt = t[i].tgt; return true; } delay(40); }
+  }
+  // 2) ISO 9141-2 (5-baud) - Gol/VW antigo, etc.
+  delay(1000);
+  kline_ok = false;
+  if (klineInit5baud()) {
+    delay(60);
+    struct { uint8_t fmt, tgt; } t[] = { {2,0x6A}, {0,0x33} };
+    for (int i = 0; i < 2; i++) { if (klinePID(0x0C, t[i].fmt, t[i].tgt, d, 8, false) >= 2) { kline_fmt = t[i].fmt; kline_tgt = t[i].tgt; return true; } delay(40); }
+  }
+  kline_ok = false;
+  return false;
+}
+
 // ============================================================
 //  STANDBY (substitui o deep sleep)
 // ============================================================
@@ -1773,16 +1797,35 @@ void taskCAN(void* param) {
     // ===== STANDBY: so monitora tensao/botao, CAN desligado =====
     if (estadoAtual == STANDBY) { loopStandby(); continue; }
 
-    // ===== SEM CAN detectado: fica PASSIVO (listen-only). NAO transmite nada -> nao perturba
-    // o barramento (nao acende airbag/luzes). So re-detecta em listen-only a cada 5s. =====
+    // ===== SEM CAN: usa K-LINE se disponivel; senao fica PASSIVO (nao transmite no CAN) =====
     if (!obd_ok) {
       static uint32_t ult_redetect = 0;
-      if (millis() - ult_redetect > 20000) {   // re-detecta a cada 20s (pouca transmissao)
+      static int kfalhas = 0;
+      uint8_t d8[8];
+
+      // ---- K-LINE como fonte de dados do painel ----
+      if (kline_ativo) {
+        bool alguma = false; int r;
+        r = klineReadPID(0x0C, d8, 8); if (r >= 2) { ultimo.rpm = ((d8[0]*256)+d8[1])/4; alguma = true; }
+        r = klineReadPID(0x0D, d8, 8); if (r >= 1) { ultimo.velocidade = d8[0]; alguma = true; }
+        r = klineReadPID(0x05, d8, 8); if (r >= 1) { ultimo.temp_motor = d8[0] - 40; alguma = true; }
+        ultimo.tensao = lerTensaoADC();
+        if (alguma) kfalhas = 0;
+        else if (++kfalhas >= 4) { kline_ativo = false; kline_ok = false; Serial.println("[KL] sessao perdida -> vai reiniciar"); }
+        if (xSemaphoreTake(mutex_dados, pdMS_TO_TICKS(50)) == pdTRUE) { dados_publicos = ultimo; xSemaphoreGive(mutex_dados); }
+        ultimo_heartbeat = millis();
+        vTaskDelay(pdMS_TO_TICKS(120));
+        continue;
+      }
+
+      // ---- sem CAN e sem K-line: tenta detectar (CAN 1x, depois K-line) a cada 20s ----
+      if (ult_redetect == 0 || millis() - ult_redetect > 20000) {
         ult_redetect = millis();
         if (detectarProtocoloOBD()) { descobrirPIDs(); ultima_redescoberta = millis(); }
+        else if (klineIniciar()) { kline_ativo = true; kfalhas = 0; Serial.println("[KL] >>> K-LINE ATIVO como fonte do painel"); }
       }
       ultimo.rpm = 0; ultimo.velocidade = 0;
-      ultimo.tensao = lerTensaoADC();   // so ADC (NAO transmite no CAN)
+      ultimo.tensao = lerTensaoADC();
       if (xSemaphoreTake(mutex_dados, pdMS_TO_TICKS(50)) == pdTRUE) { dados_publicos = ultimo; xSemaphoreGive(mutex_dados); }
       ultimo_heartbeat = millis();
       vTaskDelay(pdMS_TO_TICKS(500));
