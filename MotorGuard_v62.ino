@@ -1106,14 +1106,15 @@ uint32_t sniffCAN(uint16_t baud, uint16_t ms) {
 bool detectarProtocoloOBD() {
   const uint16_t bauds[] = {500, 250};
   for (int b = 0; b < 2; b++) {
-    // ---- passo 1: escuta passiva (listen-only) ----
+    // ---- passo 1: escuta passiva (listen-only), so informativo ----
     if (!instalarCAN(bauds[b], TWAI_MODE_LISTEN_ONLY)) { Serial.printf("[CAN] falha listen-only %dk\n", bauds[b]); continue; }
     delay(120);
-    uint32_t vistos = sniffCAN(bauds[b], 600);
+    uint32_t vistos = sniffCAN(bauds[b], 400);
     twai_stop(); twai_driver_uninstall();
-    if (vistos == 0) { Serial.printf("[CAN] %dk: barramento silencioso (sem CAN aqui)\n", bauds[b]); continue; }
-    // ---- passo 2: viu barramento -> agora sim entra em NORMAL e sonda o OBD ----
-    Serial.printf("[CAN] %dk: %lu frames vistos -> sondando OBD (modo normal)\n", bauds[b], vistos);
+    // ---- passo 2: entra em NORMAL e sonda UMA vez.
+    // (VW/gateway fica silencioso ate perguntar -> tem que sondar mesmo com vistos=0.
+    //  A "educacao" vem de sondar so aqui + a taskCAN nao transmitir se obd_ok=false.)
+    Serial.printf("[CAN] %dk: %lu frames vistos -> sondando OBD 1x\n", bauds[b], vistos);
     if (!instalarCAN(bauds[b], TWAI_MODE_NORMAL)) continue;
     delay(80);
     if (sondaOBD(0x7DF, false)) {
@@ -1776,7 +1777,7 @@ void taskCAN(void* param) {
     // o barramento (nao acende airbag/luzes). So re-detecta em listen-only a cada 5s. =====
     if (!obd_ok) {
       static uint32_t ult_redetect = 0;
-      if (millis() - ult_redetect > 5000) {
+      if (millis() - ult_redetect > 20000) {   // re-detecta a cada 20s (pouca transmissao)
         ult_redetect = millis();
         if (detectarProtocoloOBD()) { descobrirPIDs(); ultima_redescoberta = millis(); }
       }
