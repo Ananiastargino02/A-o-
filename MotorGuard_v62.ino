@@ -1825,8 +1825,11 @@ void taskCAN(void* param) {
         }
         kpid = (kpid + 1) & 3;
         ultimo.tensao = lerTensaoADC();
+        // LOG detalhado p/ diagnostico (correlacionar com o corte do motor)
+        Serial.printf("[KL] t=%lums pid=%02X r=%d %s rpm=%d temp=%d fails=%d\n",
+                      millis(), pid, r, (r >= 1 ? "OK" : "--"), ultimo.rpm, ultimo.temp_motor, kfalhas);
         if (ok1) kfalhas = 0;
-        else if (++kfalhas >= 12) { kline_ativo = false; kline_ok = false; Serial.println("[KL] sessao perdida"); }
+        else if (++kfalhas >= 12) { kline_ativo = false; kline_ok = false; Serial.println("[KL] >>> SESSAO PERDIDA (vai re-detectar em ate 20s)"); }
         if (xSemaphoreTake(mutex_dados, pdMS_TO_TICKS(50)) == pdTRUE) { dados_publicos = ultimo; xSemaphoreGive(mutex_dados); }
         ultimo_heartbeat = millis();
         vTaskDelay(pdMS_TO_TICKS(300));   // folga entre pedidos (P3 amplo) -> bem menos perturbacao
