@@ -1814,16 +1814,17 @@ void taskCAN(void* param) {
       if (kline_ativo) {
         static uint8_t kpid = 0;
         int r; bool ok1 = false;
-        uint8_t pid = (kpid == 0) ? 0x0C : (kpid == 1) ? 0x05 : (kpid == 2) ? 0x0D : 0x2F;
+        // SO PIDs essenciais e suportados. 0x2F (combustivel) FORA da leitura continua:
+        // pedir PID nao suportado estava envenenando a sessao ISO 9141 (leituras seguintes falhavam).
+        uint8_t pid = (kpid == 0) ? 0x0C : (kpid == 1) ? 0x05 : 0x0D;
         r = klineReadPID(pid, d8, 8);
         if (r >= 1) {
           ok1 = true;
           if      (pid == 0x0C && r >= 2) ultimo.rpm = ((d8[0]*256)+d8[1])/4;
           else if (pid == 0x05)           ultimo.temp_motor = d8[0] - 40;
           else if (pid == 0x0D)           ultimo.velocidade = d8[0];
-          else if (pid == 0x2F && d8[0] != 0xFF) ultimo.combust = (d8[0] * 100) / 255;
         }
-        kpid = (kpid + 1) & 3;
+        kpid = (kpid + 1) % 3;
         ultimo.tensao = lerTensaoADC();
         // LOG detalhado p/ diagnostico (correlacionar com o corte do motor)
         Serial.printf("[KL] t=%lums pid=%02X r=%d %s rpm=%d temp=%d fails=%d\n",
