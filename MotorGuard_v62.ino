@@ -1832,7 +1832,7 @@ void taskCAN(void* param) {
         else if (++kfalhas >= 12) { kline_ativo = false; kline_ok = false; Serial.println("[KL] >>> SESSAO PERDIDA (vai re-detectar em ate 20s)"); }
         if (xSemaphoreTake(mutex_dados, pdMS_TO_TICKS(50)) == pdTRUE) { dados_publicos = ultimo; xSemaphoreGive(mutex_dados); }
         ultimo_heartbeat = millis();
-        vTaskDelay(pdMS_TO_TICKS(300));   // folga entre pedidos (P3 amplo) -> bem menos perturbacao
+        vTaskDelay(pdMS_TO_TICKS(80));    // P3 ~80ms (funcionava no teste standalone; CAN agora off)
         continue;
       }
 
@@ -1840,7 +1840,11 @@ void taskCAN(void* param) {
       if (ult_redetect == 0 || millis() - ult_redetect > 20000) {
         ult_redetect = millis();
         if (detectarProtocoloOBD()) { descobrirPIDs(); ultima_redescoberta = millis(); }
-        else if (klineIniciar()) { kline_ativo = true; kfalhas = 0; Serial.println("[KL] >>> K-LINE ATIVO como fonte do painel"); }
+        else {
+          // sem CAN: DESLIGA o twai por completo (ele interfere na UART do K-line) e tenta K-line
+          twai_stop(); twai_driver_uninstall();
+          if (klineIniciar()) { kline_ativo = true; kfalhas = 0; Serial.println("[KL] >>> K-LINE ATIVO como fonte do painel (CAN desligado)"); }
+        }
       }
       ultimo.rpm = 0; ultimo.velocidade = 0;
       ultimo.tensao = lerTensaoADC();
