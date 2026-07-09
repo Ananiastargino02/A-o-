@@ -1803,18 +1803,21 @@ static int klineGMRead(uint8_t lid, uint8_t* out, int maxout) {
 }
 
 static void klineGMLiveBody() {
-  Serial.println("\n===== GM LIVE (0x21 LID 01) - engenharia reversa =====");
-  Serial.println("Acelere -> ache o RPM. Deixe esquentar -> ache a temperatura.");
-  Serial.println("Os bytes marcados com > < mudaram desde o ciclo anterior.");
-  Serial.println("Digite qualquer coisa no Serial para parar.\n");
+  Serial.println("\n===== GM LIVE (0x21 LID 01) - mapa de variacao =====");
+  Serial.println("PASSO A PASSO:");
+  Serial.println(" 1) deixe em marcha lenta ~5s");
+  Serial.println(" 2) ACELERE forte 2-3 vezes (ate ~3000+) e solte");
+  Serial.println(" 3) digite qualquer coisa no Serial + Enter para PARAR");
+  Serial.println("No fim ele mostra QUAIS bytes variaram (o que dispara ao acelerar = RPM).\n");
   kline_ok = false;
   if (!klineInitFast()) { Serial.println("[GM] fast init falhou (ligue o motor / cheque pull-up)"); Serial.println("====\n"); return; }
   delay(60);
   uint8_t prev[160]; int prevN = 0;
+  uint8_t mn[160], mx[160]; int blkN = 0; bool temMinMax = false;
   uint8_t tp[1] = {0x3E};
   uint32_t t0 = millis();
   int ciclo = 0, semResp = 0;
-  while (millis() - t0 < 120000) {                 // roda por ate 2 min
+  while (millis() - t0 < 180000) {                 // roda por ate 3 min
     if (Serial.available()) { while (Serial.available()) Serial.read(); break; }
     uint8_t d[160];
     int nd = klineGMRead(0x01, d, sizeof(d));
@@ -1825,23 +1828,35 @@ static void klineGMLiveBody() {
       delay(200); continue;
     }
     semResp = 0;
-    Serial.printf("[GM #%d] %d bytes:\n", ciclo, nd);
+    // rastreia min/max de cada byte ao longo de toda a captura
+    if (!temMinMax) { blkN = nd; for (int i = 0; i < nd && i < 160; i++) { mn[i] = mx[i] = d[i]; } temMinMax = true; }
+    else { int lim = nd < blkN ? nd : blkN; for (int i = 0; i < lim; i++) { if (d[i] < mn[i]) mn[i] = d[i]; if (d[i] > mx[i]) mx[i] = d[i]; } }
+    // print compacto do bloco (bytes que mudaram desde o ciclo anterior com > <)
+    Serial.printf("[GM #%d]", ciclo);
     for (int i = 0; i < nd; i++) {
       bool mudou = (i < prevN && d[i] != prev[i]);
-      Serial.printf(" %s[%02d]=%02X%s", mudou ? ">" : " ", i, d[i], mudou ? "<" : " ");
-      if ((i % 8) == 7) Serial.println();
+      Serial.printf(" %s%02X%s", mudou ? ">" : "", d[i], mudou ? "<" : "");
     }
     Serial.println();
-    // candidatos de RPM: pares de bytes big-endian (mostra tambem /4, resolucao OBD)
-    Serial.print("[GM] pares 16-bit:");
-    for (int i = 0; i + 1 < nd && i < 24; i += 2) {
-      int v = (d[i] << 8) | d[i + 1];
-      Serial.printf(" [%d]=%d(/4=%d)", i, v, v / 4);
-    }
-    Serial.println("\n");
     memcpy(prev, d, nd); prevN = nd;
     ciclo++;
-    delay(350);
+    delay(300);
+  }
+  // ---- resumo: quais bytes variaram (amplitude) ----
+  Serial.println("\n===== RESUMO: variacao por posicao =====");
+  Serial.println("(posicao = indice no bloco depois do 61 01; amp grande + segue a aceleracao = RPM)");
+  for (int i = 0; i < blkN; i++) {
+    int amp = mx[i] - mn[i];
+    if (amp > 0) Serial.printf(" [%02d]  %02X..%02X   amp=%d\n", i, mn[i], mx[i], amp);
+  }
+  // candidatos de RPM: pares 16-bit onde o par teve variacao
+  Serial.println("[GM] pares 16-bit com variacao (val no ultimo ciclo):");
+  for (int i = 0; i + 1 < blkN; i++) {
+    int amp = (mx[i] - mn[i]) + (mx[i + 1] - mn[i + 1]);
+    if (amp >= 4) {
+      int v = (prev[i] << 8) | prev[i + 1];
+      Serial.printf("  [%02d-%02d] = %d  (/4=%d)\n", i, i + 1, v, v / 4);
+    }
   }
   Serial.println("===== fim GM LIVE =====\n");
 }
