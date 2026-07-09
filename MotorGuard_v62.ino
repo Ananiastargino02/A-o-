@@ -1628,6 +1628,57 @@ static void klineRaw(const char* nome, const uint8_t* payload, int np, uint8_t t
   Serial.printf("[KL]  %s resp:", nome); if (n == 0) Serial.print(" (nada)"); for (int i = 0; i < n; i++) Serial.printf(" %02X", r[i]); Serial.println();
 }
 
+// Nome do codigo de resposta negativa (NRC) do KWP2000 - ajuda a entender a recusa
+static const char* nrcNome(uint8_t c) {
+  switch (c) {
+    case 0x10: return "generalReject";
+    case 0x11: return "serviceNotSupported";
+    case 0x12: return "subFunctionNotSupported";
+    case 0x21: return "busyRepeatRequest";
+    case 0x22: return "conditionsNotCorrect";
+    case 0x31: return "requestOutOfRange";
+    case 0x33: return "securityAccessDenied";
+    case 0x35: return "invalidKey";
+    case 0x78: return "responsePending";
+    case 0x7E: return "serviceNotSupportedInActiveSession";
+    case 0x7F: return "serviceNotSupportedInActiveSession";
+    default:   return "?";
+  }
+}
+
+// Envia um servico KWP com formato/alvo dados e loga a resposta JA DECODIFICADA.
+// fmt 0: "Cx tgt F1 <payload> cs"   1: "80 tgt F1 len <payload> cs"   2: ISO9141 "68 6A F1 <payload> cs"
+// Retorna: 1 = resposta positiva (servico+0x40), 0 = negativa (7F ..), -1 = nada.
+// Se out != nullptr, copia os bytes de dados apos o byte de servico positivo.
+static int klineServico(const char* nome, const uint8_t* payload, int np,
+                        uint8_t fmt, uint8_t tgt, uint8_t* out, int maxout, int* outN) {
+  if (outN) *outN = 0;
+  if (!kline_ok) return -1;
+  uint8_t req[20]; int rn = 0;
+  if (fmt == 2)      { req[rn++] = 0x68; req[rn++] = 0x6A; req[rn++] = 0xF1; }
+  else if (fmt == 1) { req[rn++] = 0x80; req[rn++] = tgt; req[rn++] = 0xF1; req[rn++] = np; }
+  else               { req[rn++] = 0xC0 | np; req[rn++] = tgt; req[rn++] = 0xF1; }
+  for (int i = 0; i < np; i++) req[rn++] = payload[i];
+  req[rn] = klineCS(req, rn); rn++;
+  Serial.printf("[KL] %s (f%d t%02X) ->", nome, fmt, tgt); for (int i = 0; i < rn; i++) Serial.printf(" %02X", req[i]); Serial.println();
+  klineSend(req, rn);
+  uint8_t r[40]; int n = 0; uint32_t t0 = millis();
+  while (n < (int)sizeof(r) && millis() - t0 < 500) { int b = klineRead(100); if (b < 0) break; r[n++] = b; }
+  Serial.printf("[KL]  resp:"); if (n == 0) Serial.print(" (nada)"); for (int i = 0; i < n; i++) Serial.printf(" %02X", r[i]);
+  uint8_t pos = payload[0] + 0x40;
+  int res = -1;
+  for (int i = 0; i < n; i++) {
+    if (r[i] == 0x7F && i + 2 < n) { Serial.printf("   <<< NEG servico %02X NRC %02X (%s)", r[i + 1], r[i + 2], nrcNome(r[i + 2])); res = 0; break; }
+    if (r[i] == pos) {
+      Serial.print("   <<< POSITIVO");
+      if (out) { int nd = n - (i + 1); if (nd < 0) nd = 0; if (nd > maxout) nd = maxout; for (int j = 0; j < nd; j++) out[j] = r[i + 1 + j]; if (outN) *outN = nd; }
+      res = 1; break;
+    }
+  }
+  Serial.println();
+  return res;
+}
+
 static void klineLerRestante() {
   uint8_t d[8]; int r;
   delay(55);
@@ -1640,48 +1691,78 @@ static void klineLerRestante() {
 
 // Diagnostico completo pelo Serial (comando "KLINE") - KWP primeiro (Montana conecta por fast init)
 static void klineDiagBody() {
-  Serial.println("\n===== TESTE K-LINE =====");
-  uint8_t d[8];
+  Serial.println("\n===== TESTE K-LINE (foco Montana/GM KWP2000) =====");
+  uint8_t d[16]; int nd;
+  struct { uint8_t fmt, tgt; } combos[] = { {0,0x33}, {1,0x33}, {0,kline_ecu}, {1,kline_ecu} };
+  uint8_t tp[1] = {0x3E};   // TesterPresent, mantem a sessao viva entre os testes
 
-  // ----- Caminho 1: KWP2000 (fast init) - o que conecta na Montana -----
+  // ----- 1) Conexao: fast init KWP2000 (o que a Montana aceita) -----
   kline_ok = false;
-  if (klineInitFast()) {
-    delay(60);
-    uint8_t s1[2] = {0x10, 0x81}; klineRaw("sess 10 81", s1, 2, 0x33); delay(60);
-    // teste DEFINITIVO: PID 0x00 (quais PIDs sao suportados). Se responder, mode01 existe.
-    uint8_t pidlist[2] = {0x00, 0x0C};
-    struct { uint8_t fmt, tgt; } tent[] = { {0,0x33}, {1,0x33}, {0,kline_ecu}, {1,kline_ecu} };
-    for (int p = 0; p < 2; p++) {
-      for (int i = 0; i < 4; i++) {
-        Serial.printf("[KL] KWP PID %02X (f%d t%02X):\n", pidlist[p], tent[i].fmt, tent[i].tgt);
-        int r = klinePID(pidlist[p], tent[i].fmt, tent[i].tgt, d, 8, true);
-        if (r >= 1 && pidlist[p] == 0x0C) { kline_fmt = tent[i].fmt; kline_tgt = tent[i].tgt;
-          Serial.printf("[KL] >>> FUNCIONOU! RPM=%d (f%d t%02X)\n", ((d[0]*256)+d[1])/4, kline_fmt, kline_tgt);
-          klineLerRestante(); Serial.println("========================\n"); return; }
-        delay(60);
+  bool conectou = klineInitFast();
+  if (!conectou) {
+    Serial.println("[KL] fast init falhou; tentando 5-baud (ISO9141)...");
+    delay(1000);
+    conectou = klineInit5baud();
+  }
+  if (!conectou) { Serial.println("[KL] nenhum init conectou. Verifique pull-up 510R / ignicao."); Serial.println("====\n"); return; }
+  delay(60);
+
+  // atualiza o alvo com o endereco fisico do ECU capturado (0x11 na Montana)
+  combos[2].tgt = kline_ecu; combos[3].tgt = kline_ecu;
+
+  // ----- 2) Abrir sessao diagnostica (varios tipos) -----
+  Serial.println("[KL] -- StartDiagnosticSession (0x10) --");
+  uint8_t sess[][2] = { {0x10,0x81}, {0x10,0x85}, {0x10,0x89}, {0x10,0x92} };
+  for (int s = 0; s < 4; s++) {
+    klineServico("StartDiagSession", sess[s], 2, 0, 0x33, nullptr, 0, nullptr);
+    delay(80);
+  }
+  klineServico("TesterPresent", tp, 1, 0, 0x33, nullptr, 0, nullptr); delay(60);
+
+  // ----- 3) Mode 01 (EOBD) - PID 00 (suportados) e 0C (RPM) -----
+  Serial.println("[KL] -- mode 01 (EOBD) --");
+  uint8_t pids[2] = {0x00, 0x0C};
+  for (int p = 0; p < 2; p++) {
+    for (int i = 0; i < 4; i++) {
+      uint8_t req[2] = {0x01, pids[p]};
+      int r = klineServico("mode01", req, 2, combos[i].fmt, combos[i].tgt, d, 16, &nd);
+      if (r == 1 && pids[p] == 0x0C && nd >= 3) {
+        kline_fmt = combos[i].fmt; kline_tgt = combos[i].tgt;
+        Serial.printf("[KL] >>> mode01 FUNCIONOU! RPM=%d (f%d t%02X)\n", ((d[1]*256)+d[2])/4, kline_fmt, kline_tgt);
+        klineLerRestante(); Serial.println("====\n"); return;
       }
+      delay(50);
     }
   }
+  klineServico("TesterPresent", tp, 1, 0, 0x33, nullptr, 0, nullptr); delay(60);
 
-  // ----- Caminho 2: ISO 9141-2 (5-baud) - fallback (por ultimo p/ nao atrapalhar o fast init) -----
-  Serial.println("[KL] KWP nao deu mode01. Tentando ISO 9141 (5-baud)...");
-  delay(1500);   // idle longo antes do 5-baud
-  kline_ok = false;
-  if (klineInit5baud()) {
-    delay(60);
-    struct { uint8_t fmt, tgt; } tent[] = { {2,0x6A}, {0,0x33} };
-    for (int i = 0; i < 2; i++) {
-      Serial.printf("[KL] ISO9141 mode01 (f%d t%02X):\n", tent[i].fmt, tent[i].tgt);
-      int r = klinePID(0x0C, tent[i].fmt, tent[i].tgt, d, 8, true);
-      if (r >= 2) { kline_fmt = tent[i].fmt; kline_tgt = tent[i].tgt;
-        Serial.printf("[KL] >>> FUNCIONOU ISO9141! RPM=%d\n", ((d[0]*256)+d[1])/4);
-        klineLerRestante(); Serial.println("========================\n"); return; }
-      delay(60);
+  // ----- 4) GM: ReadDataByLocalIdentifier (servico 0x21) - live data proprietario -----
+  //  Scanner de GM le RPM/temp/etc por 0x21 <LID>. Varre LIDs comuns e loga o que responde.
+  Serial.println("[KL] -- GM servico 0x21 (ReadDataByLocalIdentifier) --");
+  for (uint8_t lid = 0x01; lid <= 0x14; lid++) {
+    uint8_t req[2] = {0x21, lid};
+    bool achou = false;
+    for (int i = 0; i < 4 && !achou; i++) {
+      char nm[24]; snprintf(nm, sizeof(nm), "rdBLI 21 %02X", lid);
+      int r = klineServico(nm, req, 2, combos[i].fmt, combos[i].tgt, d, 16, &nd);
+      if (r == 1 && nd >= 1) { achou = true; Serial.printf("[KL] >>> 0x21 LID %02X respondeu %d bytes (f%d t%02X)\n", lid, nd, combos[i].fmt, combos[i].tgt); }
+      delay(40);
     }
+    klineServico("TesterPresent", tp, 1, 0, 0x33, nullptr, 0, nullptr); delay(30);
   }
 
-  Serial.println("[KL] Nenhum caminho leu mode01. (Se o PID 00 tambem deu 7F = mode01 nao existe nesse ECU -> EOBD provavelmente no CAN.)");
-  Serial.println("========================\n");
+  // ----- 5) GM: ReadDataByCommonIdentifier (servico 0x22) - alguns DIDs comuns -----
+  Serial.println("[KL] -- GM servico 0x22 (ReadDataByCommonIdentifier) --");
+  uint16_t dids[] = {0x0005, 0x000C, 0x1000, 0x1101, 0x1102};
+  for (int k = 0; k < 5; k++) {
+    uint8_t req[3] = {0x22, (uint8_t)(dids[k] >> 8), (uint8_t)(dids[k] & 0xFF)};
+    char nm[24]; snprintf(nm, sizeof(nm), "rdBCI 22 %04X", dids[k]);
+    klineServico(nm, req, 3, 0, combos[0].tgt, d, 16, &nd); delay(40);
+  }
+
+  Serial.println("[KL] Fim do sweep. Veja qual servico deu POSITIVO (esse eh o caminho GM).");
+  Serial.println("[KL] Se tudo deu NRC 11/12 = ECU nao expoe live data por K-line (so codigos/emissao).");
+  Serial.println("====\n");
 }
 
 // Pausa a tarefa do CAN durante o teste K-line (o driver CAN reinstalando
