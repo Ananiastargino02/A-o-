@@ -1830,7 +1830,11 @@ void taskCAN(void* param) {
         Serial.printf("[KL] t=%lums pid=%02X r=%d %s rpm=%d temp=%d fails=%d\n",
                       millis(), pid, r, (r >= 1 ? "OK" : "--"), ultimo.rpm, ultimo.temp_motor, kfalhas);
         if (ok1) kfalhas = 0;
-        else if (++kfalhas >= 12) { kline_ativo = false; kline_ok = false; Serial.println("[KL] >>> SESSAO PERDIDA (vai re-detectar em ate 20s)"); }
+        else if (++kfalhas >= 12) {
+          kline_ativo = false; kline_ok = false;
+          ult_redetect = millis();   // segura o proximo re-init por 20s (menos re-init = menos corte do motor)
+          Serial.println("[KL] >>> SESSAO PERDIDA (proximo re-init em 20s; mantendo ultimo valor na tela)");
+        }
         if (xSemaphoreTake(mutex_dados, pdMS_TO_TICKS(50)) == pdTRUE) { dados_publicos = ultimo; xSemaphoreGive(mutex_dados); }
         ultimo_heartbeat = millis();
         vTaskDelay(pdMS_TO_TICKS(80));    // P3 ~80ms (funcionava no teste standalone; CAN agora off)
