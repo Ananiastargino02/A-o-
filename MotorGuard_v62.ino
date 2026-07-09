@@ -1775,6 +1775,85 @@ void klineDiagnostico() {
   if (hcan) { twai_start(); vTaskResume(hcan); }    // religa o CAN
 }
 
+// ============================================================
+//  GM LIVE (KWP2000 servico 0x21 LID 0x01) - engenharia reversa do bloco
+//  A Montana entrega TODA a telemetria do motor num bloco unico (0x21 0x01).
+//  Este loop le o bloco e imprime cada byte com indice, marcando (> <) o que
+//  mudou desde o ciclo anterior. Acelere -> descobre o RPM; deixe esquentar
+//  -> descobre a temperatura; ande -> descobre a velocidade.
+// ============================================================
+// Le a resposta crua do 0x21 <lid> (fmt 0 "Cx", tgt 0x33). Copia os bytes de
+// dados (apos "61 <lid>", sem o checksum final) em out. Retorna nº de bytes, -1 se nada.
+static int klineGMRead(uint8_t lid, uint8_t* out, int maxout) {
+  uint8_t req[6]; int rn = 0;
+  req[rn++] = 0xC0 | 2; req[rn++] = 0x33; req[rn++] = 0xF1; req[rn++] = 0x21; req[rn++] = lid;
+  req[rn] = klineCS(req, rn); rn++;
+  klineSend(req, rn);
+  uint8_t r[160]; int n = 0; uint32_t t0 = millis();
+  while (n < (int)sizeof(r) && millis() - t0 < 400) { int b = klineRead(80); if (b < 0) break; r[n++] = b; }
+  for (int i = 0; i + 1 < n; i++) {
+    if (r[i] == 0x61 && r[i + 1] == lid) {
+      int nd = n - (i + 2) - 1;            // -1 tira o checksum final
+      if (nd < 0) nd = 0; if (nd > maxout) nd = maxout;
+      for (int j = 0; j < nd; j++) out[j] = r[i + 2 + j];
+      return nd;
+    }
+  }
+  return -1;
+}
+
+static void klineGMLiveBody() {
+  Serial.println("\n===== GM LIVE (0x21 LID 01) - engenharia reversa =====");
+  Serial.println("Acelere -> ache o RPM. Deixe esquentar -> ache a temperatura.");
+  Serial.println("Os bytes marcados com > < mudaram desde o ciclo anterior.");
+  Serial.println("Digite qualquer coisa no Serial para parar.\n");
+  kline_ok = false;
+  if (!klineInitFast()) { Serial.println("[GM] fast init falhou (ligue o motor / cheque pull-up)"); Serial.println("====\n"); return; }
+  delay(60);
+  uint8_t prev[160]; int prevN = 0;
+  uint8_t tp[1] = {0x3E};
+  uint32_t t0 = millis();
+  int ciclo = 0, semResp = 0;
+  while (millis() - t0 < 120000) {                 // roda por ate 2 min
+    if (Serial.available()) { while (Serial.available()) Serial.read(); break; }
+    uint8_t d[160];
+    int nd = klineGMRead(0x01, d, sizeof(d));
+    if (nd < 0) {
+      Serial.println("[GM] sem resposta (mantendo sessao viva...)");
+      klineServico("TP", tp, 1, 0, 0x33, nullptr, 0, nullptr);
+      if (++semResp >= 5) { Serial.println("[GM] sessao caiu, reinit..."); kline_ok = false; if (!klineInitFast()) break; semResp = 0; }
+      delay(200); continue;
+    }
+    semResp = 0;
+    Serial.printf("[GM #%d] %d bytes:\n", ciclo, nd);
+    for (int i = 0; i < nd; i++) {
+      bool mudou = (i < prevN && d[i] != prev[i]);
+      Serial.printf(" %s[%02d]=%02X%s", mudou ? ">" : " ", i, d[i], mudou ? "<" : " ");
+      if ((i % 8) == 7) Serial.println();
+    }
+    Serial.println();
+    // candidatos de RPM: pares de bytes big-endian (mostra tambem /4, resolucao OBD)
+    Serial.print("[GM] pares 16-bit:");
+    for (int i = 0; i + 1 < nd && i < 24; i += 2) {
+      int v = (d[i] << 8) | d[i + 1];
+      Serial.printf(" [%d]=%d(/4=%d)", i, v, v / 4);
+    }
+    Serial.println("\n");
+    memcpy(prev, d, nd); prevN = nd;
+    ciclo++;
+    delay(350);
+  }
+  Serial.println("===== fim GM LIVE =====\n");
+}
+
+void klineGMLive() {
+  TaskHandle_t hcan = xTaskGetHandle("CAN");
+  if (hcan) { vTaskSuspend(hcan); twai_stop(); }
+  vTaskDelay(pdMS_TO_TICKS(100));
+  klineGMLiveBody();
+  if (hcan) { twai_start(); vTaskResume(hcan); }
+}
+
 // Inicializa o K-line e descobre o formato de leitura (silencioso).
 // true = pronto p/ ler PIDs (kline_fmt/kline_tgt setados). Chamado pela taskCAN.
 bool klineIniciar() {
@@ -3612,6 +3691,7 @@ void taskSerial(void* param) {
         else if (buf == "DEBUGRESET") Serial.println(">>> Apaga o log de debug. Confirme com: DEBUGRESET SIM");
         else if (buf == "FUEL") { probe_pedir_fuel = true; Serial.println(">>> lendo 0x2F..."); }
         else if (buf == "KLINE") klineDiagnostico();   // teste K-line (ISO9141/KWP2000)
+        else if (buf == "GMLIVE") klineGMLive();        // engenharia reversa do bloco GM 0x21 LID 01 (Montana)
         else if (buf == "VBAT") {
           // CORRECAO 🟡: uma unica leitura do ADC (antes chamava lerTensaoADC() 2x -> valores diferentes)
           float v = lerTensaoADC();
