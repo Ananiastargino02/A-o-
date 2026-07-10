@@ -1518,6 +1518,11 @@ volatile bool kline_gm = false;   // fonte = bloco GM 0x21 LID 01 (offsets abaix
 int gm_off_rpm  = 32;   // RPM  = (bloco[32]*256 + bloco[33]) / 4   (lenta ~847rpm confirmada)
 int gm_off_temp = 38;   // TEMP = bloco[38] - 40   (candidato: 0x82=90C; verificar no painel)
 int gm_off_vel  = -1;   // VEL: ainda nao mapeado (precisa andar para descobrir)
+// Gravador de min/max do bloco em RAM: caca a velocidade DIRIGINDO sem laptop.
+// O aparelho acumula sozinho enquanto le a Montana; depois use GMDUMP no serial.
+uint8_t gm_mn[128], gm_mx[128];
+int gm_rec_n = 0;
+uint32_t gm_rec_amostras = 0;
 
 static uint8_t klineCS(const uint8_t* d, int n) { uint8_t s = 0; for (int i = 0; i < n; i++) s += d[i]; return s; }
 
@@ -2075,6 +2080,11 @@ void taskCAN(void* param) {
             ultimo.rpm = ((blk[gm_off_rpm] * 256) + blk[gm_off_rpm + 1]) / 4;
             if (gm_off_temp >= 0 && gm_off_temp < nb) ultimo.temp_motor = blk[gm_off_temp] - 40;
             if (gm_off_vel  >= 0 && gm_off_vel  < nb) ultimo.velocidade = blk[gm_off_vel];
+            // grava min/max de cada byte (caca a velocidade dirigindo, sem laptop -> GMDUMP depois)
+            int lim = (nb < 128) ? nb : 128;
+            if (gm_rec_n == 0) { gm_rec_n = lim; for (int i = 0; i < lim; i++) { gm_mn[i] = gm_mx[i] = blk[i]; } }
+            else { if (lim > gm_rec_n) lim = gm_rec_n; for (int i = 0; i < lim; i++) { if (blk[i] < gm_mn[i]) gm_mn[i] = blk[i]; if (blk[i] > gm_mx[i]) gm_mx[i] = blk[i]; } }
+            gm_rec_amostras++;
           } else r = -1;
         } else {
           // ---- ISO 9141 / KWP com mode01 (Gol etc.): 1 PID por ciclo ----
@@ -3799,6 +3809,20 @@ void taskSerial(void* param) {
         else if (buf == "KLINE") klineDiagnostico();   // teste K-line (ISO9141/KWP2000)
         else if (buf == "GMLIVE") klineGMLive();        // engenharia reversa do bloco GM 0x21 LID 01 (Montana)
         else if (buf == "DTC") klineDTC();               // le codigos de falha (KWP 0x18 / mode03)
+        else if (buf == "GMRESET") { gm_rec_n = 0; gm_rec_amostras = 0; Serial.println(">>> gravacao GM zerada. Agora DIRIJA (0->50->0) e depois rode GMDUMP."); }
+        else if (buf == "GMDUMP") {
+          Serial.printf("\n===== GMDUMP: %lu amostras, %d bytes =====\n", gm_rec_amostras, gm_rec_n);
+          if (gm_rec_amostras < 20) Serial.println("(POUCAS amostras: se voce dirigiu e reconectou, a placa reiniciou no USB. Me avise.)");
+          Serial.println("Procuro: byte com min~00 e max ~= velocidade de pico (km/h). Ignore 32/33=RPM, 38=temp.");
+          for (int i = 0; i < gm_rec_n; i++) {
+            int amp = gm_mx[i] - gm_mn[i];
+            if (amp > 0) {
+              const char* tag = (i == gm_off_rpm || i == gm_off_rpm + 1) ? " <-RPM" : (i == gm_off_temp) ? " <-TEMP" : "";
+              Serial.printf(" [%02d] %02X..%02X (%d..%d) amp=%d%s\n", i, gm_mn[i], gm_mx[i], gm_mn[i], gm_mx[i], amp, tag);
+            }
+          }
+          Serial.println("=====================================\n");
+        }
         else if (buf.startsWith("GMOFF ")) {            // ajusta offsets do bloco GM ao vivo: GMOFF <rpm> <temp> <vel>
           const char* s = buf.c_str() + 6;
           int rp = atoi(s); const char* p1 = strchr(s, ' ');
