@@ -1523,6 +1523,12 @@ int gm_off_vel  = -1;   // VEL: ainda nao mapeado (precisa andar para descobrir)
 uint8_t gm_mn[128], gm_mx[128];
 int gm_rec_n = 0;
 uint32_t gm_rec_amostras = 0;
+// Temperatura por calibracao linear de 2 pontos: TEMP = a*byte + b.
+// O sensor da GM manda valor CRU (inverso: sobe temp -> desce byte), entao 'a' pode ser negativo.
+// Default = byte-40 (OBD); ajuste com GMTC1/GMTC2 com o motor frio e quente.
+float gm_temp_a = 1.0f, gm_temp_b = -40.0f;
+uint8_t gm_last_temp_byte = 0;          // ultimo byte cru de temperatura (p/ calibrar)
+uint8_t gm_tc_b1 = 0; float gm_tc_t1 = 0; bool gm_tc_have1 = false;
 
 static uint8_t klineCS(const uint8_t* d, int n) { uint8_t s = 0; for (int i = 0; i < n; i++) s += d[i]; return s; }
 
@@ -2078,7 +2084,7 @@ void taskCAN(void* param) {
           if (nb > gm_off_rpm + 1) {
             ok1 = true; r = nb;
             ultimo.rpm = ((blk[gm_off_rpm] * 256) + blk[gm_off_rpm + 1]) / 4;
-            if (gm_off_temp >= 0 && gm_off_temp < nb) ultimo.temp_motor = blk[gm_off_temp] - 40;
+            if (gm_off_temp >= 0 && gm_off_temp < nb) { gm_last_temp_byte = blk[gm_off_temp]; ultimo.temp_motor = (int)(gm_temp_a * gm_last_temp_byte + gm_temp_b); }
             if (gm_off_vel  >= 0 && gm_off_vel  < nb) ultimo.velocidade = blk[gm_off_vel];
             // grava min/max de cada byte (caca a velocidade dirigindo, sem laptop -> GMDUMP depois)
             int lim = (nb < 128) ? nb : 128;
@@ -3810,6 +3816,23 @@ void taskSerial(void* param) {
         else if (buf == "GMLIVE") klineGMLive();        // engenharia reversa do bloco GM 0x21 LID 01 (Montana)
         else if (buf == "DTC") klineDTC();               // le codigos de falha (KWP 0x18 / mode03)
         else if (buf == "GMRESET") { gm_rec_n = 0; gm_rec_amostras = 0; Serial.println(">>> gravacao GM zerada. Agora DIRIJA (0->50->0) e depois rode GMDUMP."); }
+        else if (buf.startsWith("GMTC1 ")) {           // ponto 1 da calibracao de temp (motor FRIO)
+          gm_tc_b1 = gm_last_temp_byte; gm_tc_t1 = atof(buf.c_str() + 6); gm_tc_have1 = true;
+          Serial.printf(">>> temp ponto1: byte=0x%02X (%d) = %.0fC. Agora esquente e use GMTC2 <tempQuente>.\n", gm_tc_b1, gm_tc_b1, gm_tc_t1);
+        }
+        else if (buf.startsWith("GMTC2 ")) {           // ponto 2 (motor QUENTE) -> calcula a,b
+          if (!gm_tc_have1) Serial.println(">>> faca GMTC1 <tempFria> primeiro (motor frio).");
+          else {
+            uint8_t b2 = gm_last_temp_byte; float t2 = atof(buf.c_str() + 6);
+            if (b2 == gm_tc_b1) Serial.println(">>> byte igual nos 2 pontos: o byte da temp nao mudou (offset errado?). Ajuste com GMOFF.");
+            else {
+              gm_temp_a = (t2 - gm_tc_t1) / ((float)b2 - (float)gm_tc_b1);
+              gm_temp_b = gm_tc_t1 - gm_temp_a * (float)gm_tc_b1;
+              Serial.printf(">>> temp CALIBRADA: a=%.3f b=%.1f  (frio 0x%02X=%.0fC, quente 0x%02X=%.0fC)\n", gm_temp_a, gm_temp_b, gm_tc_b1, gm_tc_t1, b2, t2);
+              Serial.printf(">>> confira: agora a tela deve bater com o ponteiro. Me mande esses valores a/b p/ eu fixar no firmware.\n");
+            }
+          }
+        }
         else if (buf == "GMDUMP") {
           Serial.printf("\n===== GMDUMP: %lu amostras, %d bytes =====\n", gm_rec_amostras, gm_rec_n);
           if (gm_rec_amostras < 20) Serial.println("(POUCAS amostras: se voce dirigiu e reconectou, a placa reiniciou no USB. Me avise.)");
