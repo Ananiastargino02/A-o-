@@ -1875,6 +1875,72 @@ void klineGMLive() {
   if (hcan) { twai_start(); vTaskResume(hcan); }
 }
 
+// ============================================================
+//  LEITURA DE CODIGOS DE FALHA (DTC) - KWP2000 (Montana/GM) e OBD mode 03
+//  A Montana e GM-proprietaria (mode01 nao tem RPM), entao o mode03 padrao
+//  provavelmente nao responde. Tentamos varios servicos e logamos o que vier.
+// ============================================================
+// Decodifica um DTC de 2 bytes no formato SAE (P0xxx/C/B/U) e imprime.
+static void printDTC2(uint8_t hi, uint8_t lo) {
+  const char letra[4] = {'P', 'C', 'B', 'U'};
+  Serial.printf("%c%d%02X%02X", letra[(hi >> 6) & 3], (hi >> 4) & 3, hi & 0x0F, lo);
+}
+
+static void klineDTCBody() {
+  Serial.println("\n===== LEITURA DE CODIGOS (DTC) =====");
+  uint8_t d[40]; int nd;
+  kline_ok = false;
+  if (!klineInitFast()) { Serial.println("[DTC] fast init falhou (ligue a ignicao)"); Serial.println("====\n"); return; }
+  delay(60);
+  uint8_t tp[1] = {0x3E};
+  uint8_t sess[2] = {0x10, 0x81};
+  klineServico("StartDiagSession", sess, 2, 0, 0x33, nullptr, 0, nullptr); delay(60);
+
+  // 1) KWP2000 servico 0x18 (readDTCByStatus): 18 <status> <grupoHi> <grupoLo>
+  //    status 0x00 = todos; grupo FF00 = todos os grupos
+  Serial.println("[DTC] -- KWP 0x18 (readDTCByStatus) --");
+  uint8_t r18a[4] = {0x18, 0x00, 0xFF, 0x00};
+  int res = klineServico("18 00 FF00", r18a, 4, 0, 0x33, d, sizeof(d), &nd);
+  if (res == 1 && nd >= 1) {
+    int qtd = d[0];
+    Serial.printf("[DTC] >>> %d codigo(s):", qtd);
+    for (int i = 0; i + 2 < nd && i / 3 < qtd; i += 3) { Serial.print(" "); printDTC2(d[1 + i], d[2 + i]); Serial.printf("(st=%02X)", d[3 + i]); }
+    Serial.println();
+  }
+  delay(60);
+  uint8_t r18b[4] = {0x18, 0x02, 0xFF, 0x00};   // status 0x02 = confirmados
+  klineServico("18 02 FF00", r18b, 4, 0, 0x33, d, sizeof(d), &nd); delay(60);
+  klineServico("TP", tp, 1, 0, 0x33, nullptr, 0, nullptr); delay(60);
+
+  // 2) OBD mode 03 (request emissions DTCs) - resposta 0x43
+  Serial.println("[DTC] -- OBD mode 03 --");
+  uint8_t r03[1] = {0x03};
+  res = klineServico("mode03", r03, 1, 0, 0x33, d, sizeof(d), &nd);
+  if (res == 1) {
+    Serial.print("[DTC] >>> mode03:");
+    for (int i = 0; i + 1 < nd; i += 2) { if (d[i] == 0 && d[i + 1] == 0) continue; Serial.print(" "); printDTC2(d[i], d[i + 1]); }
+    Serial.println();
+  }
+  delay(60);
+
+  // 3) KWP servico 0x13 (readDTC legado) - alguns ECUs GM antigos
+  Serial.println("[DTC] -- KWP 0x13 (readDTC legado) --");
+  uint8_t r13[3] = {0x13, 0xFF, 0x00};
+  klineServico("13 FF00", r13, 3, 0, 0x33, d, sizeof(d), &nd); delay(60);
+
+  Serial.println("[DTC] Fim. O servico que deu POSITIVO com contagem/pares e o caminho de falhas.");
+  Serial.println("[DTC] Para APAGAR (quando implementarmos): KWP 0x14 FF00 ou mode 04.");
+  Serial.println("====\n");
+}
+
+void klineDTC() {
+  TaskHandle_t hcan = xTaskGetHandle("CAN");
+  if (hcan) { vTaskSuspend(hcan); twai_stop(); }
+  vTaskDelay(pdMS_TO_TICKS(100));
+  klineDTCBody();
+  if (hcan) { twai_start(); vTaskResume(hcan); }
+}
+
 // Inicializa o K-line e descobre o formato de leitura (silencioso).
 // true = pronto p/ ler PIDs (kline_fmt/kline_tgt setados). Chamado pela taskCAN.
 bool klineIniciar() {
@@ -3732,6 +3798,7 @@ void taskSerial(void* param) {
         else if (buf == "FUEL") { probe_pedir_fuel = true; Serial.println(">>> lendo 0x2F..."); }
         else if (buf == "KLINE") klineDiagnostico();   // teste K-line (ISO9141/KWP2000)
         else if (buf == "GMLIVE") klineGMLive();        // engenharia reversa do bloco GM 0x21 LID 01 (Montana)
+        else if (buf == "DTC") klineDTC();               // le codigos de falha (KWP 0x18 / mode03)
         else if (buf.startsWith("GMOFF ")) {            // ajusta offsets do bloco GM ao vivo: GMOFF <rpm> <temp> <vel>
           const char* s = buf.c_str() + 6;
           int rp = atoi(s); const char* p1 = strchr(s, ' ');
