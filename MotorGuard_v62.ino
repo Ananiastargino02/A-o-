@@ -1512,6 +1512,12 @@ uint8_t kline_kb1 = 0, kline_kb2 = 0;
 uint8_t kline_ecu = 0x11;   // endereco do ECU (capturado no init)
 uint8_t kline_tgt = 0x33;   // alvo do pedido (descoberto no diagnostico)
 uint8_t kline_fmt = 0;      // 0 = "Cx tgt src.." ; 1 = "80 tgt src len.." ; 2 = ISO9141
+// ---- Montana / GM: le TODO o dado do motor num bloco unico (servico 0x21 LID 0x01) ----
+// Descoberto por engenharia reversa (comando GMLIVE) na Montana 2010. mode01 nao tem RPM/temp.
+volatile bool kline_gm = false;   // fonte = bloco GM 0x21 LID 01 (offsets abaixo)
+int gm_off_rpm  = 32;   // RPM  = (bloco[32]*256 + bloco[33]) / 4   (lenta ~847rpm confirmada)
+int gm_off_temp = 38;   // TEMP = bloco[38] - 40   (candidato: 0x82=90C; verificar no painel)
+int gm_off_vel  = -1;   // VEL: ainda nao mapeado (precisa andar para descobrir)
 
 static uint8_t klineCS(const uint8_t* d, int n) { uint8_t s = 0; for (int i = 0; i < n; i++) s += d[i]; return s; }
 
@@ -1873,12 +1879,17 @@ void klineGMLive() {
 // true = pronto p/ ler PIDs (kline_fmt/kline_tgt setados). Chamado pela taskCAN.
 bool klineIniciar() {
   uint8_t d[8];
+  kline_gm = false;
   // 1) KWP2000 fast init
   kline_ok = false;
   if (klineInitFast()) {
     delay(60);
     struct { uint8_t fmt, tgt; } t[] = { {0,0x33}, {1,0x33}, {0,kline_ecu}, {1,kline_ecu} };
     for (int i = 0; i < 4; i++) { if (klinePID(0x0C, t[i].fmt, t[i].tgt, d, 8, false) >= 2) { kline_fmt = t[i].fmt; kline_tgt = t[i].tgt; return true; } delay(40); }
+    // 1b) GM (Montana): mode01 nao tem RPM -> le o bloco 0x21 LID 01 por offset
+    uint8_t blk[160];
+    int nb = klineGMRead(0x01, blk, sizeof(blk));
+    if (nb > gm_off_rpm + 1) { kline_gm = true; Serial.printf("[KL] >>> modo GM (0x21 LID01, %d bytes): RPM no offset %d\n", nb, gm_off_rpm); return true; }
   }
   // 2) ISO 9141-2 (5-baud) - Gol/VW antigo, etc.
   delay(1000);
@@ -1987,23 +1998,37 @@ void taskCAN(void* param) {
       // toda hora perturbava o ECU (motor caia no limp / pedal sem resposta). Aqui a
       // atividade no barramento e minima: um pedido a cada ~350ms.
       if (kline_ativo) {
-        static uint8_t kpid = 0;
         int r; bool ok1 = false;
-        // SO PIDs essenciais e suportados. 0x2F (combustivel) FORA da leitura continua:
-        // pedir PID nao suportado estava envenenando a sessao ISO 9141 (leituras seguintes falhavam).
-        uint8_t pid = (kpid == 0) ? 0x0C : (kpid == 1) ? 0x05 : 0x0D;
-        r = klineReadPID(pid, d8, 8);
-        if (r >= 1) {
-          ok1 = true;
-          if      (pid == 0x0C && r >= 2) ultimo.rpm = ((d8[0]*256)+d8[1])/4;
-          else if (pid == 0x05)           ultimo.temp_motor = d8[0] - 40;
-          else if (pid == 0x0D)           ultimo.velocidade = d8[0];
+        uint8_t pid = 0;
+        if (kline_gm) {
+          // ---- Montana / GM: um pedido 0x21 LID01 traz RPM + temp de uma vez ----
+          uint8_t blk[160];
+          int nb = klineGMRead(0x01, blk, sizeof(blk));
+          if (nb > gm_off_rpm + 1) {
+            ok1 = true; r = nb;
+            ultimo.rpm = ((blk[gm_off_rpm] * 256) + blk[gm_off_rpm + 1]) / 4;
+            if (gm_off_temp >= 0 && gm_off_temp < nb) ultimo.temp_motor = blk[gm_off_temp] - 40;
+            if (gm_off_vel  >= 0 && gm_off_vel  < nb) ultimo.velocidade = blk[gm_off_vel];
+          } else r = -1;
+        } else {
+          // ---- ISO 9141 / KWP com mode01 (Gol etc.): 1 PID por ciclo ----
+          static uint8_t kpid = 0;
+          // SO PIDs essenciais e suportados. 0x2F (combustivel) FORA da leitura continua:
+          // pedir PID nao suportado estava envenenando a sessao ISO 9141 (leituras seguintes falhavam).
+          pid = (kpid == 0) ? 0x0C : (kpid == 1) ? 0x05 : 0x0D;
+          r = klineReadPID(pid, d8, 8);
+          if (r >= 1) {
+            ok1 = true;
+            if      (pid == 0x0C && r >= 2) ultimo.rpm = ((d8[0]*256)+d8[1])/4;
+            else if (pid == 0x05)           ultimo.temp_motor = d8[0] - 40;
+            else if (pid == 0x0D)           ultimo.velocidade = d8[0];
+          }
+          kpid = (kpid + 1) % 3;
         }
-        kpid = (kpid + 1) % 3;
         ultimo.tensao = lerTensaoADC();
         // LOG detalhado p/ diagnostico (correlacionar com o corte do motor)
-        Serial.printf("[KL] t=%lums pid=%02X r=%d %s rpm=%d temp=%d fails=%d\n",
-                      millis(), pid, r, (r >= 1 ? "OK" : "--"), ultimo.rpm, ultimo.temp_motor, kfalhas);
+        Serial.printf("[KL] t=%lums %s pid=%02X r=%d %s rpm=%d temp=%d fails=%d\n",
+                      millis(), kline_gm ? "GM" : "  ", pid, r, (ok1 ? "OK" : "--"), ultimo.rpm, ultimo.temp_motor, kfalhas);
         if (ok1) kfalhas = 0;
         else if (++kfalhas >= 12) {
           kline_ativo = false; kline_ok = false;
@@ -3707,6 +3732,14 @@ void taskSerial(void* param) {
         else if (buf == "FUEL") { probe_pedir_fuel = true; Serial.println(">>> lendo 0x2F..."); }
         else if (buf == "KLINE") klineDiagnostico();   // teste K-line (ISO9141/KWP2000)
         else if (buf == "GMLIVE") klineGMLive();        // engenharia reversa do bloco GM 0x21 LID 01 (Montana)
+        else if (buf.startsWith("GMOFF ")) {            // ajusta offsets do bloco GM ao vivo: GMOFF <rpm> <temp> <vel>
+          const char* s = buf.c_str() + 6;
+          int rp = atoi(s); const char* p1 = strchr(s, ' ');
+          int tp = p1 ? atoi(p1 + 1) : gm_off_temp; const char* p2 = p1 ? strchr(p1 + 1, ' ') : NULL;
+          int vl = p2 ? atoi(p2 + 1) : gm_off_vel;
+          gm_off_rpm = rp; gm_off_temp = tp; gm_off_vel = vl;
+          Serial.printf(">>> offsets GM: rpm=%d temp=%d vel=%d\n", gm_off_rpm, gm_off_temp, gm_off_vel);
+        }
         else if (buf == "VBAT") {
           // CORRECAO 🟡: uma unica leitura do ADC (antes chamava lerTensaoADC() 2x -> valores diferentes)
           float v = lerTensaoADC();
