@@ -1894,7 +1894,8 @@ void klineGMLive() {
 // Decodifica um DTC de 2 bytes no formato SAE (P0xxx/C/B/U) e imprime.
 static void printDTC2(uint8_t hi, uint8_t lo) {
   const char letra[4] = {'P', 'C', 'B', 'U'};
-  Serial.printf("%c%d%02X%02X", letra[(hi >> 6) & 3], (hi >> 4) & 3, hi & 0x0F, lo);
+  // formato SAE: letra + 1 digito(0-3) + 1 hex + 2 hex = ex. P1612 (nao P10612)
+  Serial.printf("%c%d%X%02X", letra[(hi >> 6) & 3], (hi >> 4) & 3, hi & 0x0F, lo);
 }
 
 static void klineDTCBody() {
@@ -1949,6 +1950,37 @@ void klineDTC() {
   if (hcan) { vTaskSuspend(hcan); twai_stop(); }
   vTaskDelay(pdMS_TO_TICKS(100));
   klineDTCBody();
+  if (hcan) { twai_start(); vTaskResume(hcan); }
+}
+
+// Apaga os codigos de falha: KWP 0x14 (clearDiagnosticInformation) FF00 = todos.
+static void klineDTCClearBody() {
+  Serial.println("\n===== APAGAR CODIGOS (DTC) =====");
+  uint8_t d[16]; int nd;
+  kline_ok = false;
+  if (!klineInitFast()) { Serial.println("[DTC] fast init falhou (ligue a ignicao)"); Serial.println("====\n"); return; }
+  delay(60);
+  uint8_t sess[2] = {0x10, 0x81};
+  klineServico("StartDiagSession", sess, 2, 0, 0x33, nullptr, 0, nullptr); delay(60);
+  // KWP 0x14 FF 00 (apaga todos os grupos) -> resposta 0x54
+  uint8_t clr[3] = {0x14, 0xFF, 0x00};
+  int r = klineServico("clear 14 FF00", clr, 3, 0, 0x33, d, sizeof(d), &nd);
+  if (r == 1) Serial.println("[DTC] >>> APAGADO (0x54). Rode DTC de novo p/ confirmar 0 codigos.");
+  else {
+    delay(60);
+    uint8_t m4[1] = {0x04};   // fallback: mode 04 (limpa DTC de emissao)
+    if (klineServico("mode04", m4, 1, 0, 0x33, d, sizeof(d), &nd) == 1)
+      Serial.println("[DTC] >>> APAGADO via mode04. Rode DTC p/ confirmar.");
+    else Serial.println("[DTC] nao apagou (a ECU pode exigir motor desligado/condicoes).");
+  }
+  Serial.println("====\n");
+}
+
+void klineDTCClear() {
+  TaskHandle_t hcan = xTaskGetHandle("CAN");
+  if (hcan) { vTaskSuspend(hcan); twai_stop(); }
+  vTaskDelay(pdMS_TO_TICKS(100));
+  klineDTCClearBody();
   if (hcan) { twai_start(); vTaskResume(hcan); }
 }
 
@@ -3815,6 +3847,8 @@ void taskSerial(void* param) {
         else if (buf == "KLINE") klineDiagnostico();   // teste K-line (ISO9141/KWP2000)
         else if (buf == "GMLIVE") klineGMLive();        // engenharia reversa do bloco GM 0x21 LID 01 (Montana)
         else if (buf == "DTC") klineDTC();               // le codigos de falha (KWP 0x18 / mode03)
+        else if (buf == "DTCLR") Serial.println(">>> Apaga TODOS os codigos de falha. Confirme com: DTCLR SIM");
+        else if (buf == "DTCLR SIM") klineDTCClear();    // apaga codigos (KWP 0x14 FF00 / mode04)
         else if (buf == "GMRESET") { gm_rec_n = 0; gm_rec_amostras = 0; Serial.println(">>> gravacao GM zerada. Agora DIRIJA (0->50->0) e depois rode GMDUMP."); }
         else if (buf.startsWith("GMTC1 ")) {           // ponto 1 da calibracao de temp (motor FRIO)
           gm_tc_b1 = gm_last_temp_byte; gm_tc_t1 = atof(buf.c_str() + 6); gm_tc_have1 = true;
