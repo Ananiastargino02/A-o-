@@ -1143,6 +1143,59 @@ bool detectarProtocoloOBD() {
   return false;
 }
 
+// ---- SCAN pesado do CAN (carros com gateway, ex.: Fiat Stilo) ----
+// Dispara um pedido OBD num (reqid,extd) e loga TODAS as respostas cruas.
+static void scanProbe(uint32_t reqid, bool extd, uint16_t baud) {
+  twai_message_t lixo; while (twai_receive(&lixo, 0) == ESP_OK) {}
+  twai_message_t tx = {};
+  tx.identifier = reqid; tx.extd = extd ? 1 : 0; tx.data_length_code = 8;
+  tx.data[0] = 0x02; tx.data[1] = 0x01; tx.data[2] = 0x00;
+  for (int i = 3; i < 8; i++) tx.data[i] = 0x00;
+  bool txok = (twai_transmit(&tx, pdMS_TO_TICKS(80)) == ESP_OK);
+  Serial.printf("[SCAN] tx %s %lX (%dk): %s\n", extd ? "29b" : "11b", (unsigned long)reqid, baud, txok ? "enviado" : "TX FALHOU (sem ACK)");
+  uint32_t t0 = millis(); int got = 0;
+  while (millis() - t0 < 600) {
+    twai_message_t rx;
+    if (twai_receive(&rx, pdMS_TO_TICKS(50)) == ESP_OK) {
+      Serial.printf("[SCAN]  <- %s %lX:", rx.extd ? "29b" : "11b", (unsigned long)rx.identifier);
+      for (int i = 0; i < rx.data_length_code; i++) Serial.printf(" %02X", rx.data[i]);
+      Serial.println();
+      if (++got >= 16) break;
+    }
+  }
+  if (!got) Serial.println("[SCAN]  <- (nada)");
+}
+
+static void scanCANBody() {
+  Serial.println("\n===== SCAN CAN (gateway/Fiat Stilo) =====");
+  const uint16_t bauds[] = {500, 250};
+  for (int b = 0; b < 2; b++) {
+    Serial.printf("[SCAN] --- %dk ---\n", bauds[b]);
+    if (instalarCAN(bauds[b], TWAI_MODE_LISTEN_ONLY)) {   // escuta passiva longa
+      delay(120); sniffCAN(bauds[b], 1500);
+      twai_stop(); twai_driver_uninstall();
+    }
+    if (instalarCAN(bauds[b], TWAI_MODE_NORMAL)) {         // sonda ativa varios enderecos
+      delay(80);
+      scanProbe(0x7DF, false, bauds[b]);       // funcional 11-bit
+      scanProbe(0x7E0, false, bauds[b]);       // fisico ECU motor 11-bit
+      scanProbe(0x18DB33F1, true, bauds[b]);   // funcional 29-bit
+      twai_stop(); twai_driver_uninstall();
+    }
+  }
+  Serial.println("[SCAN] fim. Se so 'TX FALHOU' -> nao ha CAN (fio/velocidade). Se 'enviado' mas '(nada)'");
+  Serial.println("[SCAN] -> tem barramento mas o motor esta atras do gateway (Body Computer Fiat).");
+  Serial.println("====\n");
+}
+
+void scanCAN() {
+  TaskHandle_t hcan = xTaskGetHandle("CAN");
+  if (hcan) { vTaskSuspend(hcan); twai_stop(); twai_driver_uninstall(); }
+  vTaskDelay(pdMS_TO_TICKS(100));
+  scanCANBody();
+  if (hcan) { instalarCAN(obd_baud, TWAI_MODE_LISTEN_ONLY); vTaskResume(hcan); }
+}
+
 bool obdRequest(uint8_t pid, uint8_t* resp, uint8_t* len) {
   // limpa frames antigos da fila ANTES de perguntar: em barramento cheio (Cruze) a fila
   // enchia de mensagens de outros modulos e a resposta era descartada por overflow.
@@ -3907,6 +3960,7 @@ void taskSerial(void* param) {
         else if (buf == "FUEL") { probe_pedir_fuel = true; Serial.println(">>> lendo 0x2F..."); }
         else if (buf == "KLINE") klineDiagnostico();   // teste K-line (ISO9141/KWP2000)
         else if (buf == "GMLIVE") klineGMLive();        // engenharia reversa do bloco GM 0x21 LID 01 (Montana)
+        else if (buf == "SCAN") scanCAN();                // varredura pesada do CAN (Stilo/gateway)
         else if (buf == "DTC") klineDTC();               // le codigos de falha (KWP 0x18 / mode03)
         else if (buf == "DTCLR") Serial.println(">>> Apaga TODOS os codigos de falha. Confirme com: DTCLR SIM");
         else if (buf == "DTCLR SIM") klineDTCClear();    // apaga codigos (KWP 0x14 FF00 / mode04)
