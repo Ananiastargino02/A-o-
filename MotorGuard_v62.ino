@@ -4035,7 +4035,11 @@ void taskSerial(void* param) {
         else if (buf == "DEBUGRESET SIM") { formatarDebugLog(); Serial.println(">>> Debug log limpo"); }
         else if (buf == "DEBUGRESET") Serial.println(">>> Apaga o log de debug. Confirme com: DEBUGRESET SIM");
         else if (buf == "FUEL") { probe_pedir_fuel = true; Serial.println(">>> lendo 0x2F..."); }
-        else if (buf.startsWith("PID ")) { probe_pid_pedido = (int)strtol(buf.c_str() + 4, NULL, 16); Serial.printf(">>> sondando PID %02X...\n", probe_pid_pedido); }
+        else if (buf.startsWith("PID")) {   // aceita "PID 05" e "PID05"
+          const char* s = buf.c_str() + 3; while (*s == ' ') s++;
+          if (*s) { probe_pid_pedido = (int)strtol(s, NULL, 16); Serial.printf(">>> sondando PID %02X...\n", probe_pid_pedido); }
+          else Serial.println(">>> use: PID 05");
+        }
         else if (buf == "KLINE") klineDiagnostico();   // teste K-line (ISO9141/KWP2000)
         else if (buf == "GMLIVE") klineGMLive();        // engenharia reversa do bloco GM 0x21 LID 01 (Montana)
         else if (buf == "SCAN") scanCAN();                // varredura pesada do CAN (Stilo/gateway)
