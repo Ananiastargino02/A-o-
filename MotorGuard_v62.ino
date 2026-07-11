@@ -2552,6 +2552,10 @@ void montarCockpit() {
   lv_meter_set_scale_range(meter, escala, 0, 10, 270, 135);
   lv_meter_set_scale_ticks(meter, escala, 51, 3, 15, lv_color_hex(0x33424F));
   lv_meter_set_scale_major_ticks(meter, escala, 5, 4, 19, lv_color_hex(0xECEFF1), 12);
+  // ACENDE os numeros da escala do conta-giros (0-10): sem isso o rotulo usa a cor
+  // padrao do tema (cinza escuro) e fica quase invisivel. Forca branco + fonte legivel.
+  lv_obj_set_style_text_color(meter, lv_color_hex(0xFFFFFF), LV_PART_TICKS);
+  lv_obj_set_style_text_font(meter, &lv_font_montserrat_14, LV_PART_TICKS);
   lv_meter_indicator_t* faixa =
       lv_meter_add_scale_lines(meter, escala, lv_color_hex(0x00B0FF), lv_color_hex(0xFF1744), false, 0);
   lv_meter_set_indicator_start_value(meter, faixa, 0);
