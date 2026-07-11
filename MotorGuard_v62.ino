@@ -2372,7 +2372,23 @@ void taskCAN(void* param) {
     vTaskDelay(pdMS_TO_TICKS(30));
 
     valor = lerPID_int(0x0D, f_vel);  if (valor >= 0) { ultimo.velocidade = valor; ult_resp_ok = millis(); }  vTaskDelay(pdMS_TO_TICKS(30));
-    valor = lerPID_int(0x05, f_temp); if (valor >= -40) ultimo.temp_motor = valor;  vTaskDelay(pdMS_TO_TICKS(30));
+    // Temperatura: PID 0x05 padrao. Se o carro nao responde 0x05 (ex.: HB20 2026),
+    // usa o PID 0x67 (ECT sensor), cuja temp da agua fica no byte B (d[1]-40).
+    // Uma vez descoberto, fica travado na fonte que funciona (nao sonda as duas toda hora).
+    static uint8_t temp_src = 0x05;
+    valor = PID_ERRO;
+    if (temp_src == 0x05) {
+      valor = lerPID_int(0x05, f_temp);
+      if (valor < -40) {
+        uint8_t d67[8], l67 = 0;
+        if (obdRequest(0x67, d67, &l67) && l67 >= 2) { valor = d67[1] - 40; temp_src = 0x67; Serial.println("[TEMP] 0x05 mudo -> usando PID 0x67 (byte B)"); }
+      }
+    } else {
+      uint8_t d67[8], l67 = 0;
+      if (obdRequest(0x67, d67, &l67) && l67 >= 2) valor = d67[1] - 40;
+    }
+    if (valor >= -40) { ultimo.temp_motor = valor; ult_resp_ok = millis(); }
+    vTaskDelay(pdMS_TO_TICKS(30));
     float v_tensao = lerPID_float(0x42, f_tensao);
     if (v_tensao < 0) v_tensao = lerTensaoADC();
     if (v_tensao >= 0) ultimo.tensao = v_tensao;
