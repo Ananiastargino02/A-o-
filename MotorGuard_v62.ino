@@ -242,6 +242,7 @@ volatile bool diag_solicitar_apagar = false;
 volatile bool     probe_pedir_fuel = false;
 volatile bool     probe_pedir_m22  = false;
 volatile int      probe_pid_pedido = -1;   // comando "PID xx": sonda 1 PID e loga cru
+volatile bool     probe_temp_scan  = false; // comando "TEMPSCAN": testa PIDs de temperatura
 volatile uint16_t probe_did_ini    = 0;
 volatile uint16_t probe_did_fim    = 0;
 volatile uint32_t probe_reqid      = 0x7E0;
@@ -2425,6 +2426,24 @@ void taskCAN(void* param) {
         Serial.printf(" | A=%d (A-40=%d)  AB/4=%d\n", d[0], d[0] - 40, ((d[0] * 256) + d[1]) / 4);
       } else Serial.println("SEM RESPOSTA");
     }
+    if (probe_temp_scan) {
+      probe_temp_scan = false;
+      // PIDs de temperatura (mode 01). Formula padrao = A-40, exceto onde indicado.
+      struct { uint8_t pid; const char* nome; } tp[] = {
+        {0x05, "Agua (padrao)"}, {0x67, "Agua sensor"}, {0x5C, "Oleo"},
+        {0x46, "Ar ambiente"}, {0x0F, "Ar admissao"}, {0x68, "Ar admissao multi"}
+      };
+      Serial.println("\n===== TEMPSCAN (procurando a temperatura) =====");
+      for (int i = 0; i < 6; i++) {
+        uint8_t d[8], len = 0;
+        Serial.printf("[T] PID %02X %-16s: ", tp[i].pid, tp[i].nome);
+        if (obdRequest(tp[i].pid, d, &len)) { Serial.printf("A=%d -> %dC (A-40)\n", d[0], d[0] - 40); }
+        else Serial.println("sem resposta");
+        vTaskDelay(pdMS_TO_TICKS(60));
+      }
+      Serial.println("O PID que der um valor plausivel (~70-95C com motor quente) e o da agua.");
+      Serial.println("====\n");
+    }
 
     // ===== Hodometro conta APENAS quando velocidade > 0 (nao RPM) =====
     uint32_t agora = millis();
@@ -4041,6 +4060,7 @@ void taskSerial(void* param) {
         else if (buf == "DEBUGRESET SIM") { formatarDebugLog(); Serial.println(">>> Debug log limpo"); }
         else if (buf == "DEBUGRESET") Serial.println(">>> Apaga o log de debug. Confirme com: DEBUGRESET SIM");
         else if (buf == "FUEL") { probe_pedir_fuel = true; Serial.println(">>> lendo 0x2F..."); }
+        else if (buf == "TEMPSCAN") { probe_temp_scan = true; Serial.println(">>> procurando o PID de temperatura..."); }
         else if (buf.startsWith("PID")) {   // aceita "PID 05" e "PID05"
           const char* s = buf.c_str() + 3; while (*s == ' ') s++;
           if (*s) { probe_pid_pedido = (int)strtol(s, NULL, 16); Serial.printf(">>> sondando PID %02X...\n", probe_pid_pedido); }
