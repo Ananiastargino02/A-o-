@@ -241,6 +241,7 @@ volatile bool diag_solicitar_apagar = false;
 
 volatile bool     probe_pedir_fuel = false;
 volatile bool     probe_pedir_m22  = false;
+volatile int      probe_pid_pedido = -1;   // comando "PID xx": sonda 1 PID e loga cru
 volatile uint16_t probe_did_ini    = 0;
 volatile uint16_t probe_did_fim    = 0;
 volatile uint32_t probe_reqid      = 0x7E0;
@@ -2408,6 +2409,16 @@ void taskCAN(void* param) {
     }
     if (probe_pedir_fuel) { probe_pedir_fuel = false; probeFuel2F(); }
     if (probe_pedir_m22)  { probe_pedir_m22 = false;  runProbeM22(); }
+    if (probe_pid_pedido >= 0) {
+      uint8_t p = (uint8_t)probe_pid_pedido; probe_pid_pedido = -1;
+      uint8_t d[8], len = 0;
+      bool sup = pid_suportado[p];
+      Serial.printf("[PID] %02X (suportado=%d): ", p, sup);
+      if (obdRequest(p, d, &len)) {
+        for (int i = 0; i < len; i++) Serial.printf("%02X ", d[i]);
+        Serial.printf(" | A=%d (A-40=%d)  AB/4=%d\n", d[0], d[0] - 40, ((d[0] * 256) + d[1]) / 4);
+      } else Serial.println("SEM RESPOSTA");
+    }
 
     // ===== Hodometro conta APENAS quando velocidade > 0 (nao RPM) =====
     uint32_t agora = millis();
@@ -4024,6 +4035,7 @@ void taskSerial(void* param) {
         else if (buf == "DEBUGRESET SIM") { formatarDebugLog(); Serial.println(">>> Debug log limpo"); }
         else if (buf == "DEBUGRESET") Serial.println(">>> Apaga o log de debug. Confirme com: DEBUGRESET SIM");
         else if (buf == "FUEL") { probe_pedir_fuel = true; Serial.println(">>> lendo 0x2F..."); }
+        else if (buf.startsWith("PID ")) { probe_pid_pedido = (int)strtol(buf.c_str() + 4, NULL, 16); Serial.printf(">>> sondando PID %02X...\n", probe_pid_pedido); }
         else if (buf == "KLINE") klineDiagnostico();   // teste K-line (ISO9141/KWP2000)
         else if (buf == "GMLIVE") klineGMLive();        // engenharia reversa do bloco GM 0x21 LID 01 (Montana)
         else if (buf == "SCAN") scanCAN();                // varredura pesada do CAN (Stilo/gateway)
