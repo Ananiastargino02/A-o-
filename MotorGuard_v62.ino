@@ -1065,6 +1065,7 @@ bool sondaOBD(uint32_t reqid, bool extd) {
   while (twai_receive(&lixo, 0) == ESP_OK) {}  // limpa fila
   twai_message_t tx = {};
   tx.identifier = reqid; tx.extd = extd ? 1 : 0; tx.data_length_code = 8;
+  tx.ss = 1;   // single-shot: manda UMA vez, sem retransmitir em rajada (nao inunda o barramento -> nao acende airbag)
   tx.data[0] = 0x02; tx.data[1] = 0x01; tx.data[2] = 0x00;  // PIDs suportados
   for (int i = 3; i < 8; i++) tx.data[i] = 0x00;
   if (twai_transmit(&tx, pdMS_TO_TICKS(80)) != ESP_OK) return false;
@@ -1107,41 +1108,62 @@ uint32_t sniffCAN(uint16_t baud, uint16_t ms) {
 // 1) escuta em LISTEN-ONLY (nao transmite, nao da ACK) p/ ver se ha CAN naquele baud;
 // 2) SO se houver frames, reinstala em NORMAL e sonda (transmite) o OBD;
 // 3) se nao houver CAN em nenhum baud, NAO transmite nada (fica passivo) -> nao acende airbag.
+// Detecta o protocolo com o MINIMO de perturbacao (importante: NAO acender airbag).
+// Regra de ouro: nunca transmitir na velocidade errada. Primeiro DESCOBRE a velocidade
+// so ESCUTANDO (listen-only, nao transmite), e so entao transmite UMA vez, na velocidade certa.
+static void obdListenOnly(uint16_t baud) {
+  instalarCAN(baud, TWAI_MODE_LISTEN_ONLY);
+  obd_req_id = 0x7DF; obd_extd = false; obd_resp_min = 0x7E8; obd_resp_max = 0x7EF;
+  obd_baud = baud; obd_ok = false;
+}
 bool detectarProtocoloOBD() {
   const uint16_t bauds[] = {500, 250};
+  // ---- passo 1: acha a velocidade SO ESCUTANDO (nao transmite -> nao mexe no airbag) ----
+  int baud_ativo = 0;
   for (int b = 0; b < 2; b++) {
-    // ---- passo 1: escuta passiva (listen-only), so informativo ----
-    if (!instalarCAN(bauds[b], TWAI_MODE_LISTEN_ONLY)) { Serial.printf("[CAN] falha listen-only %dk\n", bauds[b]); continue; }
+    if (!instalarCAN(bauds[b], TWAI_MODE_LISTEN_ONLY)) continue;
     delay(120);
-    uint32_t vistos = sniffCAN(bauds[b], 400);
+    uint32_t vistos = sniffCAN(bauds[b], 500);
     twai_stop(); twai_driver_uninstall();
-    // ---- passo 2: entra em NORMAL e sonda UMA vez.
-    // (VW/gateway fica silencioso ate perguntar -> tem que sondar mesmo com vistos=0.
-    //  A "educacao" vem de sondar so aqui + a taskCAN nao transmitir se obd_ok=false.)
-    Serial.printf("[CAN] %dk: %lu frames vistos -> sondando OBD 1x\n", bauds[b], vistos);
-    if (!instalarCAN(bauds[b], TWAI_MODE_NORMAL)) continue;
+    if (vistos > 0) { baud_ativo = bauds[b]; break; }   // ESSA e a velocidade real do barramento
+  }
+
+  // ---- passo 2: barramento com trafego -> sonda OBD SO nessa velocidade (single-shot) ----
+  if (baud_ativo) {
+    Serial.printf("[CAN] barramento ativo em %dk -> sondando OBD (velocidade certa)\n", baud_ativo);
+    if (instalarCAN(baud_ativo, TWAI_MODE_NORMAL)) {
+      delay(80);
+      if (sondaOBD(0x7DF, false)) {
+        obd_req_id = 0x7DF; obd_extd = false; obd_resp_min = 0x7E8; obd_resp_max = 0x7EF;
+        obd_baud = baud_ativo; obd_ok = true;
+        Serial.printf("[CAN] >>> Protocolo: 11-bit / %dk <<<\n", obd_baud); return true;
+      }
+      if (sondaOBD(0x18DB33F1, true)) {
+        obd_req_id = 0x18DB33F1; obd_extd = true; obd_baud = baud_ativo; obd_ok = true;
+        Serial.printf("[CAN] >>> Protocolo: 29-bit / %dk <<<\n", obd_baud); return true;
+      }
+      twai_stop(); twai_driver_uninstall();
+    }
+    // tem barramento mas nao respondeu OBD -> fica PASSIVO na velocidade certa (nao transmite mais)
+    Serial.printf("[CAN] %dk tem barramento mas sem OBD -> LISTEN-ONLY (passivo)\n", baud_ativo);
+    obdListenOnly(baud_ativo);
+    return false;
+  }
+
+  // ---- passo 3: silencio total. Pode ser gateway silencioso (VW): sonda 500k UMA vez, single-shot ----
+  Serial.println("[CAN] sem trafego -> 1 sonda gentil em 500k (gateway?)");
+  if (instalarCAN(500, TWAI_MODE_NORMAL)) {
     delay(80);
     if (sondaOBD(0x7DF, false)) {
       obd_req_id = 0x7DF; obd_extd = false; obd_resp_min = 0x7E8; obd_resp_max = 0x7EF;
-      obd_baud = bauds[b]; obd_ok = true;
-      Serial.printf("[CAN] >>> Protocolo: 11-bit / %dk <<<\n", obd_baud);
-      return true;
+      obd_baud = 500; obd_ok = true;
+      Serial.println("[CAN] >>> Protocolo: 11-bit / 500k (gateway) <<<"); return true;
     }
-    if (sondaOBD(0x18DB33F1, true)) {
-      obd_req_id = 0x18DB33F1; obd_extd = true;
-      obd_baud = bauds[b]; obd_ok = true;
-      Serial.printf("[CAN] >>> Protocolo: 29-bit / %dk <<<\n", obd_baud);
-      return true;
-    }
-    Serial.printf("[CAN] %dk: tem barramento mas sem resposta OBD\n", bauds[b]);
     twai_stop(); twai_driver_uninstall();
   }
-  // Nada de CAN: instala em LISTEN-ONLY (passivo) e marca obd_ok=false.
-  // A taskCAN NAO vai transmitir enquanto obd_ok=false -> zero perturbacao (nada de airbag).
-  instalarCAN(500, TWAI_MODE_LISTEN_ONLY);
-  obd_req_id = 0x7DF; obd_extd = false; obd_resp_min = 0x7E8; obd_resp_max = 0x7EF; obd_baud = 500;
-  obd_ok = false;
-  Serial.println("[CAN] Nenhum CAN detectado -> ficando em LISTEN-ONLY (nao transmite)");
+  // Nada: LISTEN-ONLY passivo (nunca mais transmite) -> zero perturbacao, nada de airbag.
+  obdListenOnly(500);
+  Serial.println("[CAN] Nenhum CAN detectado -> LISTEN-ONLY (passivo)");
   return false;
 }
 
@@ -1245,6 +1267,7 @@ bool obdRequest(uint8_t pid, uint8_t* resp, uint8_t* len) {
   while (twai_receive(&lixo, 0) == ESP_OK) { /* descarta */ }
   twai_message_t tx = {};
   tx.identifier = obd_req_id; tx.extd = obd_extd ? 1 : 0; tx.data_length_code = 8;
+  tx.ss = 1;   // single-shot: nao retransmite em rajada se o carro nao responder (nao acende airbag)
   tx.data[0] = 0x02; tx.data[1] = 0x01; tx.data[2] = pid;
   for (int i = 3; i < 8; i++) tx.data[i] = 0x00;
   if (twai_transmit(&tx, pdMS_TO_TICKS(80)) != ESP_OK) return false;
@@ -1349,6 +1372,7 @@ void decodificaDTC(uint8_t b1, uint8_t b2, char* out) {
 int lerDTCs(char dtcs[][6]) {
   twai_message_t tx = {};
   tx.identifier = obd_req_id; tx.extd = obd_extd ? 1 : 0; tx.data_length_code = 8;
+  tx.ss = 1;
   tx.data[0] = 0x01; tx.data[1] = 0x03;
   for (int i = 2; i < 8; i++) tx.data[i] = 0x00;
   if (twai_transmit(&tx, pdMS_TO_TICKS(100)) != ESP_OK) return -1;
@@ -1403,6 +1427,7 @@ int lerDTCs(char dtcs[][6]) {
 bool apagarDTCs() {
   twai_message_t tx = {};
   tx.identifier = obd_req_id; tx.extd = obd_extd ? 1 : 0; tx.data_length_code = 8;
+  tx.ss = 1;
   tx.data[0] = 0x01; tx.data[1] = 0x04;
   for (int i = 2; i < 8; i++) tx.data[i] = 0x00;
   if (twai_transmit(&tx, pdMS_TO_TICKS(100)) != ESP_OK) return false;
