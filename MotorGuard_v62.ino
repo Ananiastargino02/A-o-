@@ -1065,7 +1065,6 @@ bool sondaOBD(uint32_t reqid, bool extd) {
   while (twai_receive(&lixo, 0) == ESP_OK) {}  // limpa fila
   twai_message_t tx = {};
   tx.identifier = reqid; tx.extd = extd ? 1 : 0; tx.data_length_code = 8;
-  tx.ss = 1;   // single-shot: manda UMA vez, sem retransmitir em rajada (nao inunda o barramento -> nao acende airbag)
   tx.data[0] = 0x02; tx.data[1] = 0x01; tx.data[2] = 0x00;  // PIDs suportados
   for (int i = 3; i < 8; i++) tx.data[i] = 0x00;
   if (twai_transmit(&tx, pdMS_TO_TICKS(80)) != ESP_OK) return false;
@@ -1150,18 +1149,24 @@ bool detectarProtocoloOBD() {
     return false;
   }
 
-  // ---- passo 3: silencio total. Pode ser gateway silencioso (VW): sonda 500k UMA vez, single-shot ----
-  Serial.println("[CAN] sem trafego -> 1 sonda gentil em 500k (gateway?)");
-  if (instalarCAN(500, TWAI_MODE_NORMAL)) {
+  // ---- passo 3: silencio total. Pode ser gateway silencioso (VW): sonda 500k e 250k ----
+  Serial.println("[CAN] sem trafego -> sondando gateway em 500k e 250k");
+  const uint16_t tb[] = {500, 250};
+  for (int b = 0; b < 2; b++) {
+    if (!instalarCAN(tb[b], TWAI_MODE_NORMAL)) continue;
     delay(80);
     if (sondaOBD(0x7DF, false)) {
       obd_req_id = 0x7DF; obd_extd = false; obd_resp_min = 0x7E8; obd_resp_max = 0x7EF;
-      obd_baud = 500; obd_ok = true;
-      Serial.println("[CAN] >>> Protocolo: 11-bit / 500k (gateway) <<<"); return true;
+      obd_baud = tb[b]; obd_ok = true;
+      Serial.printf("[CAN] >>> Protocolo: 11-bit / %dk (gateway) <<<\n", tb[b]); return true;
+    }
+    if (sondaOBD(0x18DB33F1, true)) {
+      obd_req_id = 0x18DB33F1; obd_extd = true; obd_baud = tb[b]; obd_ok = true;
+      Serial.printf("[CAN] >>> Protocolo: 29-bit / %dk (gateway) <<<\n", tb[b]); return true;
     }
     twai_stop(); twai_driver_uninstall();
   }
-  // Nada: LISTEN-ONLY passivo (nunca mais transmite) -> zero perturbacao, nada de airbag.
+  // Nada: LISTEN-ONLY passivo (nunca mais transmite) -> zero perturbacao.
   obdListenOnly(500);
   Serial.println("[CAN] Nenhum CAN detectado -> LISTEN-ONLY (passivo)");
   return false;
@@ -1267,7 +1272,6 @@ bool obdRequest(uint8_t pid, uint8_t* resp, uint8_t* len) {
   while (twai_receive(&lixo, 0) == ESP_OK) { /* descarta */ }
   twai_message_t tx = {};
   tx.identifier = obd_req_id; tx.extd = obd_extd ? 1 : 0; tx.data_length_code = 8;
-  tx.ss = 1;   // single-shot: nao retransmite em rajada se o carro nao responder (nao acende airbag)
   tx.data[0] = 0x02; tx.data[1] = 0x01; tx.data[2] = pid;
   for (int i = 3; i < 8; i++) tx.data[i] = 0x00;
   if (twai_transmit(&tx, pdMS_TO_TICKS(80)) != ESP_OK) return false;
@@ -1372,7 +1376,6 @@ void decodificaDTC(uint8_t b1, uint8_t b2, char* out) {
 int lerDTCs(char dtcs[][6]) {
   twai_message_t tx = {};
   tx.identifier = obd_req_id; tx.extd = obd_extd ? 1 : 0; tx.data_length_code = 8;
-  tx.ss = 1;
   tx.data[0] = 0x01; tx.data[1] = 0x03;
   for (int i = 2; i < 8; i++) tx.data[i] = 0x00;
   if (twai_transmit(&tx, pdMS_TO_TICKS(100)) != ESP_OK) return -1;
@@ -1427,7 +1430,6 @@ int lerDTCs(char dtcs[][6]) {
 bool apagarDTCs() {
   twai_message_t tx = {};
   tx.identifier = obd_req_id; tx.extd = obd_extd ? 1 : 0; tx.data_length_code = 8;
-  tx.ss = 1;
   tx.data[0] = 0x01; tx.data[1] = 0x04;
   for (int i = 2; i < 8; i++) tx.data[i] = 0x00;
   if (twai_transmit(&tx, pdMS_TO_TICKS(100)) != ESP_OK) return false;
