@@ -635,6 +635,8 @@ const DtcDescricao DTC_TABLE[] PROGMEM = {
   {"U0121","Perda com. ABS"},{"U0140","Perda com. BCM"},
   {"P2015","Sensor coletor adm"},{"P2279","Vazam admissao"},
   {"P0011","Variador adm"},{"P0014","Variador esc"},
+  {"P0650","Luz de injecao (MIL)"},   // Montana/GM
+  {"P1612","GM: comunicacao ECM"},{"P1613","GM: comunicacao"},{"P1614","GM: comunicacao"},
 };
 const uint16_t DTC_TABLE_SIZE = sizeof(DTC_TABLE) / sizeof(DtcDescricao);
 
@@ -1984,6 +1986,44 @@ void klineDTCClear() {
   if (hcan) { twai_start(); vTaskResume(hcan); }
 }
 
+// Le DTCs via K-line KWP 0x18 (Montana/GM), preenche dtcs[][6], retorna qtd (-1 = erro).
+// Roda INLINE na taskCAN (twai ja off no modo K-line); NAO suspende tarefas.
+int klineLerDTCs(char dtcs[][6]) {
+  if (!kline_ok) return -1;
+  uint8_t req[8]; int rn = 0;
+  req[rn++] = 0xC0 | 4; req[rn++] = 0x33; req[rn++] = 0xF1; req[rn++] = 0x18; req[rn++] = 0x00; req[rn++] = 0xFF; req[rn++] = 0x00;
+  req[rn] = klineCS(req, rn); rn++;
+  klineSend(req, rn);
+  uint8_t r[80]; int n = 0; uint32_t t0 = millis();
+  while (n < (int)sizeof(r) && millis() - t0 < 500) { int b = klineRead(100); if (b < 0) break; r[n++] = b; }
+  for (int i = 0; i + 1 < n; i++) {
+    if (r[i] == 0x58) {                       // resposta positiva ao 0x18
+      int qtd = r[i + 1], num = 0, p = i + 2;
+      for (int k = 0; k < qtd && num < MAX_DTCS && p + 1 < n; k++, p += 3) {  // pares: hi lo status
+        uint8_t b1 = r[p], b2 = r[p + 1];
+        if (b1 == 0 && b2 == 0) continue;
+        decodificaDTC(b1, b2, dtcs[num]); num++;
+      }
+      return num;
+    }
+    if (r[i] == 0x7F) return 0;               // negativo = sem codigos/servico
+  }
+  return -1;
+}
+
+// Apaga DTCs via K-line KWP 0x14 FF00 (Montana/GM). Roda inline. true = apagou.
+bool klineApagarDTCs() {
+  if (!kline_ok) return false;
+  uint8_t req[8]; int rn = 0;
+  req[rn++] = 0xC0 | 3; req[rn++] = 0x33; req[rn++] = 0xF1; req[rn++] = 0x14; req[rn++] = 0xFF; req[rn++] = 0x00;
+  req[rn] = klineCS(req, rn); rn++;
+  klineSend(req, rn);
+  uint8_t r[24]; int n = 0; uint32_t t0 = millis();
+  while (n < (int)sizeof(r) && millis() - t0 < 500) { int b = klineRead(100); if (b < 0) break; r[n++] = b; }
+  for (int i = 0; i < n; i++) if (r[i] == 0x54) return true;   // 0x14+0x40 = positivo
+  return false;
+}
+
 // Inicializa o K-line e descobre o formato de leitura (silencioso).
 // true = pronto p/ ler PIDs (kline_fmt/kline_tgt setados). Chamado pela taskCAN.
 bool klineIniciar() {
@@ -2149,6 +2189,20 @@ void taskCAN(void* param) {
           ult_redetect = millis();   // segura o proximo re-init por 20s (menos re-init = menos corte do motor)
           Serial.println("[KL] >>> SESSAO PERDIDA (proximo re-init em 20s; mantendo ultimo valor na tela)");
         }
+        // ---- menu de falhas do VEICAN via K-line (Montana): ler / apagar na tela ----
+        if (diag_solicitar_leitura) {
+          diag_solicitar_leitura = false;
+          char dtcs_buf[MAX_DTCS][6];
+          int n = klineLerDTCs(dtcs_buf);
+          if (n < 0) { diag_num_dtcs = 0; }
+          else { for (int i = 0; i < n; i++) memcpy(diag_dtcs[i], dtcs_buf[i], 6); diag_num_dtcs = n; if (rtc_ok) diag_ultima_leitura = rtcNow().unixtime(); }
+          diag_estado = DIAG_ESTADO_RESULTADO;
+        }
+        if (diag_solicitar_apagar) {
+          diag_solicitar_apagar = false;
+          if (klineApagarDTCs()) { diag_num_dtcs = 0; if (rtc_ok) diag_ultima_leitura = rtcNow().unixtime(); diag_estado = DIAG_ESTADO_APAGADO_OK; }
+          else { diag_estado = DIAG_ESTADO_MENU; }
+        }
         if (xSemaphoreTake(mutex_dados, pdMS_TO_TICKS(50)) == pdTRUE) { dados_publicos = ultimo; xSemaphoreGive(mutex_dados); }
         ultimo_heartbeat = millis();
         vTaskDelay(pdMS_TO_TICKS(80));    // P3 ~80ms (funcionava no teste standalone; CAN agora off)
@@ -2165,6 +2219,9 @@ void taskCAN(void* param) {
           if (klineIniciar()) { kline_ativo = true; kfalhas = 0; Serial.println("[KL] >>> K-LINE ATIVO como fonte do painel (CAN desligado)"); }
         }
       }
+      // sem fonte conectada: nao deixa o menu de falhas travar em "lendo"
+      if (diag_solicitar_leitura) { diag_solicitar_leitura = false; diag_num_dtcs = 0; diag_estado = DIAG_ESTADO_RESULTADO; }
+      if (diag_solicitar_apagar)  { diag_solicitar_apagar = false; diag_estado = DIAG_ESTADO_MENU; }
       ultimo.rpm = 0; ultimo.velocidade = 0;
       ultimo.tensao = lerTensaoADC();
       if (xSemaphoreTake(mutex_dados, pdMS_TO_TICKS(50)) == pdTRUE) { dados_publicos = ultimo; xSemaphoreGive(mutex_dados); }
