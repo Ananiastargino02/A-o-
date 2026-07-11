@@ -1515,9 +1515,9 @@ uint8_t kline_fmt = 0;      // 0 = "Cx tgt src.." ; 1 = "80 tgt src len.." ; 2 =
 // ---- Montana / GM: le TODO o dado do motor num bloco unico (servico 0x21 LID 0x01) ----
 // Descoberto por engenharia reversa (comando GMLIVE) na Montana 2010. mode01 nao tem RPM/temp.
 volatile bool kline_gm = false;   // fonte = bloco GM 0x21 LID 01 (offsets abaixo)
-int gm_off_rpm  = 32;   // RPM  = (bloco[32]*256 + bloco[33]) / 4   (lenta ~847rpm confirmada)
-int gm_off_temp = 38;   // TEMP = bloco[38] - 40   (candidato: 0x82=90C; verificar no painel)
-int gm_off_vel  = -1;   // VEL: ainda nao mapeado (precisa andar para descobrir)
+int gm_off_rpm  = 32;   // RPM  = (bloco[32]*256 + bloco[33]) / 4   (lenta ~780rpm confirmada)
+int gm_off_temp = 41;   // TEMP = bloco[41] em °C DIRETO (leu 74 = termometro 74; faixa 71..74 estavel)
+int gm_off_vel  = 36;   // VEL  = bloco[36] em km/h direto (0..64 no teste; min=0 parado). Verificar na estrada.
 // Gravador de min/max do bloco em RAM: caca a velocidade DIRIGINDO sem laptop.
 // O aparelho acumula sozinho enquanto le a Montana; depois use GMDUMP no serial.
 uint8_t gm_mn[128], gm_mx[128];
@@ -1526,7 +1526,7 @@ uint32_t gm_rec_amostras = 0;
 // Temperatura por calibracao linear de 2 pontos: TEMP = a*byte + b.
 // O sensor da GM manda valor CRU (inverso: sobe temp -> desce byte), entao 'a' pode ser negativo.
 // Default = byte-40 (OBD); ajuste com GMTC1/GMTC2 com o motor frio e quente.
-float gm_temp_a = 1.0f, gm_temp_b = -40.0f;
+float gm_temp_a = 1.0f, gm_temp_b = 0.0f;   // [41] ja vem em °C direto (byte = graus)
 uint8_t gm_last_temp_byte = 0;          // ultimo byte cru de temperatura (p/ calibrar)
 uint8_t gm_tc_b1 = 0; float gm_tc_t1 = 0; bool gm_tc_have1 = false;
 
@@ -3836,11 +3836,11 @@ void taskSerial(void* param) {
         else if (buf == "GMDUMP") {
           Serial.printf("\n===== GMDUMP: %lu amostras, %d bytes =====\n", gm_rec_amostras, gm_rec_n);
           if (gm_rec_amostras < 20) Serial.println("(POUCAS amostras: se voce dirigiu e reconectou, a placa reiniciou no USB. Me avise.)");
-          Serial.println("Procuro: byte com min~00 e max ~= velocidade de pico (km/h). Ignore 32/33=RPM, 38=temp.");
+          Serial.println("Procuro: byte com min~00 e max ~= velocidade de pico (km/h).");
           for (int i = 0; i < gm_rec_n; i++) {
             int amp = gm_mx[i] - gm_mn[i];
             if (amp > 0) {
-              const char* tag = (i == gm_off_rpm || i == gm_off_rpm + 1) ? " <-RPM" : (i == gm_off_temp) ? " <-TEMP" : "";
+              const char* tag = (i == gm_off_rpm || i == gm_off_rpm + 1) ? " <-RPM" : (i == gm_off_temp) ? " <-TEMP" : (i == gm_off_vel) ? " <-VEL" : "";
               Serial.printf(" [%02d] %02X..%02X (%d..%d) amp=%d%s\n", i, gm_mn[i], gm_mx[i], gm_mn[i], gm_mx[i], amp, tag);
             }
           }
