@@ -1193,7 +1193,47 @@ void scanCAN() {
   if (hcan) { vTaskSuspend(hcan); twai_stop(); twai_driver_uninstall(); }
   vTaskDelay(pdMS_TO_TICKS(100));
   scanCANBody();
-  if (hcan) { instalarCAN(obd_baud, TWAI_MODE_LISTEN_ONLY); vTaskResume(hcan); }
+  if (hcan) { twai_stop(); twai_driver_uninstall(); instalarCAN(500, TWAI_MODE_LISTEN_ONLY); vTaskResume(hcan); }
+}
+
+// Varre os 8 enderecos fisicos padrao de ECU (0x7E0..0x7E7) a 500k e loga qualquer
+// resposta. Ultimo tiro seguro p/ o Stilo (so IDs de diagnostico, nao mexe em modulos).
+static void scanSweepBody() {
+  Serial.println("\n===== SWEEP 0x7E0..0x7E7 (500k) =====");
+  if (!instalarCAN(500, TWAI_MODE_NORMAL)) { Serial.println("[SWP] falha instalar 500k"); Serial.println("====\n"); return; }
+  delay(80);
+  int achou = 0;
+  for (uint32_t id = 0x7E0; id <= 0x7E7; id++) {
+    twai_message_t lixo; while (twai_receive(&lixo, 0) == ESP_OK) {}
+    twai_message_t tx = {};
+    tx.identifier = id; tx.extd = 0; tx.data_length_code = 8;
+    tx.data[0] = 0x02; tx.data[1] = 0x01; tx.data[2] = 0x00;
+    for (int i = 3; i < 8; i++) tx.data[i] = 0x00;
+    bool txok = (twai_transmit(&tx, pdMS_TO_TICKS(60)) == ESP_OK);
+    Serial.printf("[SWP] REQ %lX: %s\n", (unsigned long)id, txok ? "tx ok" : "TX FALHOU");
+    uint32_t t0 = millis();
+    while (millis() - t0 < 200) {
+      twai_message_t rx;
+      if (twai_receive(&rx, pdMS_TO_TICKS(40)) == ESP_OK) {
+        if (rx.identifier == id) continue;
+        Serial.printf("[SWP]   <- %lX:", (unsigned long)rx.identifier);
+        for (int i = 0; i < rx.data_length_code; i++) Serial.printf(" %02X", rx.data[i]);
+        Serial.println();
+        achou++;
+      }
+    }
+  }
+  twai_stop(); twai_driver_uninstall();
+  if (!achou) Serial.println("[SWP] NENHUM respondeu -> motor fora do barramento OBD (gateway/CAN-C). Confirmado.");
+  Serial.println("====\n");
+}
+
+void scanSweep() {
+  TaskHandle_t hcan = xTaskGetHandle("CAN");
+  if (hcan) { vTaskSuspend(hcan); twai_stop(); twai_driver_uninstall(); }
+  vTaskDelay(pdMS_TO_TICKS(100));
+  scanSweepBody();
+  if (hcan) { twai_stop(); twai_driver_uninstall(); instalarCAN(500, TWAI_MODE_LISTEN_ONLY); vTaskResume(hcan); }
 }
 
 bool obdRequest(uint8_t pid, uint8_t* resp, uint8_t* len) {
@@ -3961,6 +4001,7 @@ void taskSerial(void* param) {
         else if (buf == "KLINE") klineDiagnostico();   // teste K-line (ISO9141/KWP2000)
         else if (buf == "GMLIVE") klineGMLive();        // engenharia reversa do bloco GM 0x21 LID 01 (Montana)
         else if (buf == "SCAN") scanCAN();                // varredura pesada do CAN (Stilo/gateway)
+        else if (buf == "SWEEP") scanSweep();             // varre 0x7E0..0x7E7 (ultimo teste Stilo)
         else if (buf == "DTC") klineDTC();               // le codigos de falha (KWP 0x18 / mode03)
         else if (buf == "DTCLR") Serial.println(">>> Apaga TODOS os codigos de falha. Confirme com: DTCLR SIM");
         else if (buf == "DTCLR SIM") klineDTCClear();    // apaga codigos (KWP 0x14 FF00 / mode04)
