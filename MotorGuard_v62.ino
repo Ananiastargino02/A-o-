@@ -2823,21 +2823,47 @@ void atualizarCockpit(DadosCarro &d) {
   }
   if (alertCnt > 1 && t % 130 == 0) alertIdx = (alertIdx + 1) % alertCnt;
 
+  // TEMP ALTA e critico: fica FIXO e piscando forte. Os demais avisos aparecem
+  // em ciclo (5s visivel / 15s oculto) p/ nao cobrir a tela o tempo todo.
+  bool tempCritica = false;
+  for (int i = 0; i < alertCnt; i++) if (strcmp(alerts[i], "TEMP ALTA") == 0) { tempCritica = true; break; }
+
+  static uint32_t alerta_desde = 0;
+  if (alertCnt > 0) { if (alerta_desde == 0) alerta_desde = millis(); }
+  else alerta_desde = 0;
+
   blinkT++;
   bool blink_changed = false;
-  if (blinkT % 33 == 0) { blink = !blink; blink_changed = true; }
+  int blinkDiv = tempCritica ? 18 : 33;                 // temp critica pisca mais rapido (mais forte)
+  if (blinkT % blinkDiv == 0) { blink = !blink; blink_changed = true; }
 
-  if (alertCnt == 0) {
+  // janela de exibicao: temp critica SEMPRE; avisos normais 5s on / 15s off (ciclo 20s)
+  bool janela = tempCritica || (alerta_desde && ((millis() - alerta_desde) % 20000UL) < 5000UL);
+
+  if (alertCnt == 0 || !janela) {
     if (popup_shown) { lv_obj_add_flag(popup, LV_OBJ_FLAG_HIDDEN); popup_shown = false; }
   } else {
     if (!popup_shown) { lv_obj_clear_flag(popup, LV_OBJ_FLAG_HIDDEN); popup_shown = true; blink_changed = true; last_alertIdx = -1; }
-    if (alertIdx != last_alertIdx) { lv_label_set_text(popupMsg, alerts[alertIdx]); last_alertIdx = alertIdx; }
+    if (tempCritica) {
+      if (last_alertIdx != -2) { lv_label_set_text(popupMsg, "TEMP ALTA"); last_alertIdx = -2; }
+    } else {
+      if (alertIdx != last_alertIdx) { lv_label_set_text(popupMsg, alerts[alertIdx]); last_alertIdx = alertIdx; }
+    }
     if (blink_changed) {
-      lv_color_t forte = blink ? lv_color_hex(0xFF1744) : lv_color_hex(0x5A1414);
-      lv_color_t txt   = blink ? lv_color_hex(0xFF6B6B) : lv_color_hex(0x7A2A2A);
-      lv_obj_set_style_border_color(popup, forte, 0);
-      lv_obj_set_style_text_color(popupIcon, forte, 0);
-      lv_obj_set_style_text_color(popupMsg, txt, 0);
+      if (tempCritica) {
+        // pisca FORTE: fundo e borda em vermelho vivo, texto branco pulsante
+        lv_obj_set_style_bg_color(popup, blink ? lv_color_hex(0x7A0A0A) : lv_color_hex(0x1A0707), 0);
+        lv_obj_set_style_border_color(popup, blink ? lv_color_hex(0xFF1744) : lv_color_hex(0x8A0A0A), 0);
+        lv_obj_set_style_text_color(popupIcon, blink ? lv_color_hex(0xFFFFFF) : lv_color_hex(0xFF1744), 0);
+        lv_obj_set_style_text_color(popupMsg, blink ? lv_color_hex(0xFFFFFF) : lv_color_hex(0xFF5252), 0);
+      } else {
+        lv_obj_set_style_bg_color(popup, lv_color_hex(0x1A0707), 0);   // restaura fundo padrao
+        lv_color_t forte = blink ? lv_color_hex(0xFF1744) : lv_color_hex(0x5A1414);
+        lv_color_t txt   = blink ? lv_color_hex(0xFF6B6B) : lv_color_hex(0x7A2A2A);
+        lv_obj_set_style_border_color(popup, forte, 0);
+        lv_obj_set_style_text_color(popupIcon, forte, 0);
+        lv_obj_set_style_text_color(popupMsg, txt, 0);
+      }
     }
   }
 }
