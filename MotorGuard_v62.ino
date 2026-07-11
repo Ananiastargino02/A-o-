@@ -2379,6 +2379,12 @@ void taskCAN(void* param) {
     if ((ciclo % 4) == 0) {
       valor = lerCombustivelPct(); if (valor >= 0) ultimo.combust = valor; vTaskDelay(pdMS_TO_TICKS(30));
     }
+    // Desconectou o OBD (ou perdeu o CAN de vez): apos ~3s SEM nenhuma resposta valida,
+    // limpa a tela em vez de congelar os ultimos valores. (Congestionamento curto ainda
+    // segura o valor; so limpa quando some mesmo.)
+    if ((millis() - ult_resp_ok) > 3000) {
+      ultimo.rpm = 0; ultimo.velocidade = 0; ultimo.temp_motor = PID_ERRO; ultimo.combust = -1;
+    }
     if (xSemaphoreTake(mutex_dados, pdMS_TO_TICKS(50)) == pdTRUE) {
       dados_publicos = ultimo;
       xSemaphoreGive(mutex_dados);
