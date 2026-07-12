@@ -2519,12 +2519,13 @@ void taskCAN(void* param) {
       probe_fuelwatch = false;
       Serial.println("\n===== FUELWATCH (candidatos de combustivel ao vivo) =====");
       Serial.println("ANDE p/ variar o tanque e veja qual acompanha o PONTEIRO. Tecla p/ parar.");
-      struct { uint32_t id; uint8_t b; } cand[] = { {0x329,1}, {0x280,3}, {0x130,1}, {0x2A0,4}, {0x131,4}, {0x43F,1} };
+      struct { uint32_t id; uint8_t b; } cand[] = { {0x329,1}, {0x280,3}, {0x130,1}, {0x260,4}, {0x545,4}, {0x2A0,4}, {0x131,4}, {0x43F,1} };
+      const int NCAND = 8;
       uint32_t t0 = millis();
       while (millis() - t0 < 120000) {
         if (Serial.available()) { while (Serial.available()) Serial.read(); break; }
         Serial.print("[FW]");
-        for (int i = 0; i < 6; i++) {
+        for (int i = 0; i < NCAND; i++) {
           int v = lerFrameByte(cand[i].id, cand[i].b, 150);
           if (v >= 0) Serial.printf("  %lX.%d=%d(%d%%)", (unsigned long)cand[i].id, cand[i].b, v, v * 100 / 255);
           else        Serial.printf("  %lX.%d=--", (unsigned long)cand[i].id, cand[i].b);
