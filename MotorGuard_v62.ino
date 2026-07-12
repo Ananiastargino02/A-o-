@@ -249,6 +249,11 @@ volatile uint16_t probe_did_fim    = 0;
 volatile uint32_t probe_reqid      = 0x7E0;
 volatile uint8_t  fuel_metodo = 0;
 volatile bool     fuel_2f_declarado = false;   // o carro declara o PID 0x2F no bitmask? (p/ desambiguar 0xFF cheio vs indisponivel)
+// Hyundai/Kia: combustivel num frame de broadcast proprio (Azera: ID 0x329 byte1, escala /255).
+// Ajustavel ao vivo com o comando HYFUEL <id_hex> <byte> <max> p/ outros modelos.
+uint32_t hy_fuel_id   = 0x329;
+uint8_t  hy_fuel_byte = 1;
+uint16_t hy_fuel_max  = 255;
 
 volatile uint16_t debug_log_head = 0;
 volatile uint16_t debug_log_count = 0;
@@ -1506,6 +1511,7 @@ int lerDID22(uint32_t reqId, uint16_t did, uint8_t* out, int maxOut) {
   return -1;
 }
 
+int lerFrameByte(uint32_t id, uint8_t bi, uint32_t to_ms);   // definida adiante
 void detectarMetodoCombustivel() {
   uint8_t d[8], len;
   bool val2F_ok = false;    // respondeu com valor valido (<0xFF)
@@ -1533,11 +1539,39 @@ void detectarMetodoCombustivel() {
       return;
     }
   }
+  // Hyundai/Kia: combustivel num frame de broadcast (Azera 0x329 byte1). Se o carro
+  // transmite esse frame, usa por ai (passivo, sem request).
+  int hb = lerFrameByte(hy_fuel_id, hy_fuel_byte, 600);
+  if (hb >= 0) {
+    fuel_metodo = 4;
+    Serial.printf("[Fuel] metodo = broadcast Hyundai (ID %lX byte %d /%d) = %d%%\n",
+                  (unsigned long)hy_fuel_id, hy_fuel_byte, hy_fuel_max, (hb * 100) / hy_fuel_max);
+    return;
+  }
   fuel_metodo = 3;
   Serial.println("[Fuel] metodo = indisponivel");
 }
 
+// Escuta ate to_ms por um frame CAN com 'id' e retorna o byte 'bi' (-1 se nao veio).
+int lerFrameByte(uint32_t id, uint8_t bi, uint32_t to_ms) {
+  uint32_t t0 = millis();
+  while (millis() - t0 < to_ms) {
+    twai_message_t rx;
+    if (twai_receive(&rx, pdMS_TO_TICKS(20)) == ESP_OK) {
+      if (rx.identifier == id && bi < rx.data_length_code) return rx.data[bi];
+    }
+  }
+  return -1;
+}
+
 int lerCombustivelPct() {
+  if (fuel_metodo == 4) {   // Hyundai/Kia: broadcast (Azera ID 0x329 byte1 /255)
+    int b = lerFrameByte(hy_fuel_id, hy_fuel_byte, 250);
+    if (b < 0) return -1;
+    int pct = (b * 100) / hy_fuel_max;
+    if (pct > 100) pct = 100;
+    return pct;
+  }
   if (fuel_metodo == 1) {
     uint8_t d[8], len;
     if (obdRequest(0x2F, d, &len)) {
@@ -4126,6 +4160,14 @@ void taskSerial(void* param) {
         else if (buf == "FUEL") { probe_pedir_fuel = true; Serial.println(">>> lendo 0x2F..."); }
         else if (buf == "TEMPSCAN") { probe_temp_scan = true; Serial.println(">>> procurando o PID de temperatura..."); }
         else if (buf == "CANDUMP") { probe_candump = true; Serial.println(">>> capturando frames do barramento..."); }
+        else if (buf.startsWith("HYFUEL ")) {   // ajusta o combustivel broadcast Hyundai: HYFUEL <id_hex> <byte> <max>
+          const char* s = buf.c_str() + 7;
+          hy_fuel_id = (uint32_t)strtol(s, NULL, 16);
+          const char* p1 = strchr(s, ' ');
+          if (p1) { hy_fuel_byte = (uint8_t)atoi(p1 + 1); const char* p2 = strchr(p1 + 1, ' '); if (p2) hy_fuel_max = (uint16_t)atoi(p2 + 1); }
+          fuel_metodo = 0;   // forca redeteccao com os novos parametros
+          Serial.printf(">>> HYFUEL id=%lX byte=%d max=%d (redetectando)\n", (unsigned long)hy_fuel_id, hy_fuel_byte, hy_fuel_max);
+        }
         else if (buf.startsWith("PID")) {   // aceita "PID 05" e "PID05"
           const char* s = buf.c_str() + 3; while (*s == ' ') s++;
           if (*s) { probe_pid_pedido = (int)strtol(s, NULL, 16); Serial.printf(">>> sondando PID %02X...\n", probe_pid_pedido); }
