@@ -1512,11 +1512,11 @@ void detectarMetodoCombustivel() {
     if (obdRequest(0x2F, d, &len) && d[0] != 0xFF) val2F_ok = true;
     else vTaskDelay(pdMS_TO_TICKS(80));
   }
-  // Usa 0x2F se o carro DECLARA o PID (bitmask) OU se ja veio um valor valido.
-  // (Se declara mas leu 0xFF agora, e so tanque CHEIO = 100%, nao "indisponivel".)
-  if (fuel_2f_declarado || val2F_ok) {
+  // Usa 0x2F SO se veio um valor valido (<0xFF). Declarar no bitmask nao basta:
+  // o Azera declara o 0x2F mas responde 0xFF sem entregar o nivel real.
+  if (val2F_ok) {
     fuel_metodo = 1;
-    Serial.printf("[Fuel] metodo = PID 0x2F (declarado=%d, valor_visto=%d)\n", fuel_2f_declarado, val2F_ok);
+    Serial.printf("[Fuel] metodo = PID 0x2F (declarado=%d)\n", fuel_2f_declarado);
     return;
   }
   uint8_t vin[20];
@@ -1540,7 +1540,9 @@ int lerCombustivelPct() {
   if (fuel_metodo == 1) {
     uint8_t d[8], len;
     if (obdRequest(0x2F, d, &len)) {
-      if (d[0] == 0xFF) return 100;   // metodo 1 = carro suporta 0x2F -> 0xFF e tanque CHEIO (100%)
+      // 0xFF e ambiguo (cheio OU indisponivel). Como muitos carros (Azera, Honda) respondem
+      // 0xFF sem entregar o nivel real, e mais seguro ESCONDER (mostra --) do que mostrar 100% falso.
+      if (d[0] == 0xFF) return -1;
       return (d[0] * 100) / 255;
     }
     return -1;
