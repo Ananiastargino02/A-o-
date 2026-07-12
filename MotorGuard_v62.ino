@@ -86,6 +86,16 @@
 #define VBAT_RATIO  ((39000.0 + 10000.0) / 10000.0)  // divisor 39k/10k -> 4.9
 
 // ============================================================
+//  MODO COMERCIAL (#16 da revisao de seguranca)
+//  0 = desenvolvimento: TODOS os comandos de engenharia disponiveis (use agora).
+//  1 = fabrica/produto: os comandos que TRANSMITEM no CAN ou fazem varredura
+//      (SCAN, SWEEP, SWEEP22, M22, GMLIVE, CANDUMP, FUELWATCH, KLINE, DTC...)
+//      ficam de FORA da compilacao. Mude para 1 SO ao fechar a versao de venda.
+//  Enquanto estiver 0, nada muda no comportamento atual.
+// ============================================================
+#define MODO_COMERCIAL 0
+
+// ============================================================
 //  EEPROM Layout
 // ============================================================
 #define EEPROM_ADDR      0x57
@@ -673,7 +683,8 @@ struct DebugRecord {
 //  EEPROM low-level
 // ============================================================
 bool eepromWriteBytes(uint16_t addr, uint8_t* buf, uint16_t len) {
-  if (mutex_i2c) xSemaphoreTake(mutex_i2c, portMAX_DELAY);
+  // #8: NUNCA espera o mutex I2C pra sempre — timeout p/ nao travar a tarefa
+  if (mutex_i2c && xSemaphoreTake(mutex_i2c, pdMS_TO_TICKS(300)) != pdTRUE) return false;
   bool ok = true;
   uint16_t escritos = 0;
   while (escritos < len) {
@@ -694,7 +705,8 @@ bool eepromWriteBytes(uint16_t addr, uint8_t* buf, uint16_t len) {
 }
 
 bool eepromReadBytes(uint16_t addr, uint8_t* buf, uint16_t len) {
-  if (mutex_i2c) xSemaphoreTake(mutex_i2c, portMAX_DELAY);
+  // #8: mutex com timeout (nao trava a tarefa se o barramento estiver ocupado)
+  if (mutex_i2c && xSemaphoreTake(mutex_i2c, pdMS_TO_TICKS(300)) != pdTRUE) return false;
   bool ok = true;
   Wire.beginTransmission(EEPROM_ADDR);
   Wire.write((addr >> 8) & 0xFF);
@@ -705,8 +717,12 @@ bool eepromReadBytes(uint16_t addr, uint8_t* buf, uint16_t len) {
     uint16_t lidos = 0;
     while (lidos < len) {
       uint8_t pedaco = min((uint16_t)32, (uint16_t)(len - lidos));
-      Wire.requestFrom(EEPROM_ADDR, pedaco);
+      // #7: se o EEPROM nao responder, requestFrom devolve 0 -> SAI (antes travava aqui pra sempre)
+      uint8_t got = Wire.requestFrom(EEPROM_ADDR, pedaco);
+      if (got == 0) { ok = false; break; }
+      uint16_t antes = lidos;
       while (Wire.available() && lidos < len) buf[lidos++] = Wire.read();
+      if (lidos == antes) { ok = false; break; }   // sem progresso -> sai (nunca trava)
     }
   }
   if (mutex_i2c) xSemaphoreGive(mutex_i2c);
@@ -818,7 +834,8 @@ void salvarConfig() {
   memcpy(c.magic, "CFG1", 4);
   c.voltcal = voltcal; c.km_cal = km_cal;
   c.crc = somaCRC((uint8_t*)&c, 12);
-  eepromWriteBytes(CONFIG_ADDR, (uint8_t*)&c, sizeof(c));
+  // #9: nao ignora falha de gravacao — registra no log de diagnostico
+  if (!eepromWriteBytes(CONFIG_ADDR, (uint8_t*)&c, sizeof(c))) debugLog(2, "EEPROM cfg falhou");
 }
 bool carregarConfig() {
   EepromConfig c;
@@ -847,7 +864,7 @@ void salvarHodometro() {
   s.crc = somaCRC((uint8_t*)&s, 16);
   // alterna o slot: seq impar -> A, par -> B (o slot antigo fica intacto durante a gravacao)
   uint16_t addr = (odo_seq & 1) ? ODO_SLOT_A : ODO_SLOT_B;
-  eepromWriteBytes(addr, (uint8_t*)&s, sizeof(s));
+  if (!eepromWriteBytes(addr, (uint8_t*)&s, sizeof(s))) debugLog(2, "EEPROM odo falhou");   // #9
 }
 
 static bool lerSlotOdo(uint16_t addr, OdoSlot &s) {
@@ -4184,9 +4201,11 @@ void taskSerial(void* param) {
         else if (buf == "FUELWATCH") { probe_fuelwatch = true; Serial.println(">>> observando candidatos de combustivel..."); }
         else if (buf.startsWith("HYFUEL ")) {   // ajusta o combustivel broadcast Hyundai: HYFUEL <id_hex> <byte> <max>
           const char* s = buf.c_str() + 7;
-          hy_fuel_id = (uint32_t)strtol(s, NULL, 16);
+          hy_fuel_id = (uint32_t)strtol(s, NULL, 16) & 0x1FFFFFFF;   // #14: dentro da faixa de ID CAN
           const char* p1 = strchr(s, ' ');
           if (p1) { hy_fuel_byte = (uint8_t)atoi(p1 + 1); const char* p2 = strchr(p1 + 1, ' '); if (p2) hy_fuel_max = (uint16_t)atoi(p2 + 1); }
+          if (hy_fuel_byte > 7) hy_fuel_byte = 7;                    // #14: byte 0..7
+          if (hy_fuel_max < 1) hy_fuel_max = 1;                      // #14: evita divisao por zero
           fuel_metodo = 0;   // forca redeteccao com os novos parametros
           Serial.printf(">>> HYFUEL id=%lX byte=%d max=%d (redetectando)\n", (unsigned long)hy_fuel_id, hy_fuel_byte, hy_fuel_max);
         }
@@ -4197,8 +4216,10 @@ void taskSerial(void* param) {
         }
         else if (buf == "KLINE") klineDiagnostico();   // teste K-line (ISO9141/KWP2000)
         else if (buf == "GMLIVE") klineGMLive();        // engenharia reversa do bloco GM 0x21 LID 01 (Montana)
-        else if (buf == "SCAN") scanCAN();                // varredura pesada do CAN (Stilo/gateway)
-        else if (buf == "SWEEP") scanSweep();             // varre 0x7E0..0x7E7 (ultimo teste Stilo)
+#if !MODO_COMERCIAL
+        else if (buf == "SCAN") scanCAN();                // varredura pesada do CAN (Stilo/gateway) [engenharia]
+        else if (buf == "SWEEP") scanSweep();             // varre 0x7E0..0x7E7 (ultimo teste Stilo) [engenharia]
+#endif
         else if (buf == "DTC") klineDTC();               // le codigos de falha (KWP 0x18 / mode03)
         else if (buf == "DTCLR") Serial.println(">>> Apaga TODOS os codigos de falha. Confirme com: DTCLR SIM");
         else if (buf == "DTCLR SIM") klineDTCClear();    // apaga codigos (KWP 0x14 FF00 / mode04)
@@ -4238,7 +4259,10 @@ void taskSerial(void* param) {
           int rp = atoi(s); const char* p1 = strchr(s, ' ');
           int tp = p1 ? atoi(p1 + 1) : gm_off_temp; const char* p2 = p1 ? strchr(p1 + 1, ' ') : NULL;
           int vl = p2 ? atoi(p2 + 1) : gm_off_vel;
-          gm_off_rpm = rp; gm_off_temp = tp; gm_off_vel = vl;
+          // #14: offsets dentro do bloco (0..126 p/ RPM que le 2 bytes; -1 desliga temp/vel)
+          if (rp >= 0 && rp <= 126) gm_off_rpm = rp;
+          if (tp >= -1 && tp <= 127) gm_off_temp = tp;
+          if (vl >= -1 && vl <= 127) gm_off_vel = vl;
           Serial.printf(">>> offsets GM: rpm=%d temp=%d vel=%d\n", gm_off_rpm, gm_off_temp, gm_off_vel);
         }
         else if (buf == "VBAT") {
@@ -4249,8 +4273,12 @@ void taskSerial(void* param) {
         else if (buf.startsWith("VOLTCAL ")) {
           float real = atof(buf.c_str() + 8);
           float lido = lerTensaoADC() / voltcal;
-          if (real > 0.5 && lido > 0.5) { voltcal = real / lido; salvarConfig(); Serial.printf(">>> VOLTCAL=%.4f (real=%.2f lido_cru=%.2f). Salvo na EEPROM.\n", voltcal, real, lido); }
-          else Serial.println(">>> VOLTCAL: leitura invalida. Use: VOLTCAL 12.6");
+          // #15: exige tensao plausivel (5-20V) e clampeia o fator numa faixa segura (0.5-2.0)
+          if (real > 5.0 && real < 20.0 && lido > 0.5) {
+            float nv = real / lido; if (nv < 0.5f) nv = 0.5f; if (nv > 2.0f) nv = 2.0f;
+            voltcal = nv; salvarConfig();
+            Serial.printf(">>> VOLTCAL=%.4f (real=%.2f lido_cru=%.2f). Salvo na EEPROM.\n", voltcal, real, lido);
+          } else Serial.println(">>> VOLTCAL: fora da faixa (use ex.: VOLTCAL 12.6, entre 5 e 20V)");
         }
         else if (buf.startsWith("KMCAL ")) {
           const char* s = buf.c_str() + 6;
@@ -4258,8 +4286,8 @@ void taskSerial(void* param) {
           const char* sp = strchr(s, ' ');
           float most = sp ? atof(sp + 1) : 0;
           if (real > 0.5 && most > 0.5) {
-            km_cal = km_cal * (real / most);
-            salvarConfig();
+            float nk = km_cal * (real / most); if (nk < 0.5f) nk = 0.5f; if (nk > 2.0f) nk = 2.0f;  // #15: faixa segura
+            km_cal = nk; salvarConfig();
             Serial.printf(">>> KMCAL=%.4f (real=%.1f mostrado=%.1f). Salvo na EEPROM.\n", km_cal, real, most);
           } else Serial.println(">>> KMCAL invalido. Use: KMCAL 52 48");
         }
@@ -4273,7 +4301,8 @@ void taskSerial(void* param) {
         else if (buf.startsWith("M22 ")) { probe_did_ini = probe_did_fim = (uint16_t)strtol(buf.c_str() + 4, NULL, 16); probe_pedir_m22 = true; }
         else if (buf.length() > 0) Serial.printf(">>> Desconhecido: '%s'\n", buf.c_str());
         buf = "";
-      } else buf += c;
+      } else if (buf.length() < 128) buf += c;   // #5: limita o comando (descarta o excesso, nao cresce sem fim)
+      else { buf = ""; }                          // passou de 128 sem \n -> descarta (entrada malformada/abuso)
     }
     vTaskDelay(pdMS_TO_TICKS(100));
   }
