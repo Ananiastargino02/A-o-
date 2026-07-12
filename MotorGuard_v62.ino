@@ -243,6 +243,7 @@ volatile bool     probe_pedir_fuel = false;
 volatile bool     probe_pedir_m22  = false;
 volatile int      probe_pid_pedido = -1;   // comando "PID xx": sonda 1 PID e loga cru
 volatile bool     probe_temp_scan  = false; // comando "TEMPSCAN": testa PIDs de temperatura
+volatile bool     probe_candump    = false; // comando "CANDUMP": lista todos os frames do barramento
 volatile uint16_t probe_did_ini    = 0;
 volatile uint16_t probe_did_fim    = 0;
 volatile uint32_t probe_reqid      = 0x7E0;
@@ -2456,6 +2457,29 @@ void taskCAN(void* param) {
     }
     if (probe_pedir_fuel) { probe_pedir_fuel = false; probeFuel2F(); }
     if (probe_pedir_m22)  { probe_pedir_m22 = false;  runProbeM22(); }
+    if (probe_candump) {
+      probe_candump = false;
+      Serial.println("\n===== CANDUMP (frames do barramento, ~2.5s) =====");
+      static struct { uint32_t id; uint8_t d[8]; uint8_t len; } fr[64];
+      int nf = 0;
+      uint32_t t0 = millis();
+      while (millis() - t0 < 2500) {
+        twai_message_t rx;
+        if (twai_receive(&rx, pdMS_TO_TICKS(20)) == ESP_OK) {
+          int idx = -1;
+          for (int i = 0; i < nf; i++) if (fr[i].id == rx.identifier) { idx = i; break; }
+          if (idx < 0 && nf < 64) { idx = nf++; fr[idx].id = rx.identifier; }
+          if (idx >= 0) { fr[idx].len = rx.data_length_code; for (int j = 0; j < 8; j++) fr[idx].d[j] = rx.data[j]; }
+        }
+      }
+      for (int i = 0; i < nf; i++) {
+        Serial.printf("[DUMP] %03lX:", (unsigned long)fr[i].id);
+        for (int j = 0; j < fr[i].len; j++) Serial.printf(" %02X", fr[i].d[j]);
+        Serial.println();
+      }
+      Serial.printf("[DUMP] %d IDs. Ache o byte do combustivel (tanque ~70%%: procure ~B3 se 0-255, ~46 se 0-100, ~23-2D se litros).\n", nf);
+      Serial.println("====\n");
+    }
     if (probe_pid_pedido >= 0) {
       uint8_t p = (uint8_t)probe_pid_pedido; probe_pid_pedido = -1;
       uint8_t d[8], len = 0;
@@ -4101,6 +4125,7 @@ void taskSerial(void* param) {
         else if (buf == "DEBUGRESET") Serial.println(">>> Apaga o log de debug. Confirme com: DEBUGRESET SIM");
         else if (buf == "FUEL") { probe_pedir_fuel = true; Serial.println(">>> lendo 0x2F..."); }
         else if (buf == "TEMPSCAN") { probe_temp_scan = true; Serial.println(">>> procurando o PID de temperatura..."); }
+        else if (buf == "CANDUMP") { probe_candump = true; Serial.println(">>> capturando frames do barramento..."); }
         else if (buf.startsWith("PID")) {   // aceita "PID 05" e "PID05"
           const char* s = buf.c_str() + 3; while (*s == ' ') s++;
           if (*s) { probe_pid_pedido = (int)strtol(s, NULL, 16); Serial.printf(">>> sondando PID %02X...\n", probe_pid_pedido); }
