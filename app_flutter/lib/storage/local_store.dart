@@ -1,0 +1,64 @@
+import 'dart:convert';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../models/car_profile.dart';
+import '../models/maintenance.dart';
+
+/// Persistencia local no celular (perfil do carro + historico de manutencao).
+class LocalStore {
+  static const _kProfile = 'car_profile';
+  static const _kHistory = 'maint_history';
+  static const _kLastDevice = 'last_device_id';
+
+  Future<CarProfile> loadProfile() async {
+    final p = await SharedPreferences.getInstance();
+    final s = p.getString(_kProfile);
+    if (s == null) return CarProfile();
+    try {
+      return CarProfile.fromJson(jsonDecode(s));
+    } catch (_) {
+      return CarProfile();
+    }
+  }
+
+  Future<void> saveProfile(CarProfile c) async {
+    final p = await SharedPreferences.getInstance();
+    await p.setString(_kProfile, jsonEncode(c.toJson()));
+  }
+
+  Future<List<MaintRecord>> loadHistory() async {
+    final p = await SharedPreferences.getInstance();
+    final s = p.getString(_kHistory);
+    if (s == null) return [];
+    try {
+      final List list = jsonDecode(s);
+      final recs = list.map((e) => MaintRecord.fromJson(e)).toList();
+      recs.sort((a, b) => b.data.compareTo(a.data)); // mais recente primeiro
+      return recs;
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Future<void> addHistory(MaintRecord r) async {
+    final list = await loadHistory();
+    list.insert(0, r);
+    if (list.length > 200) list.removeRange(200, list.length);
+    final p = await SharedPreferences.getInstance();
+    await p.setString(_kHistory, jsonEncode(list.map((e) => e.toJson()).toList()));
+  }
+
+  Future<void> clearHistory() async {
+    final p = await SharedPreferences.getInstance();
+    await p.remove(_kHistory);
+  }
+
+  Future<String?> lastDeviceId() async {
+    final p = await SharedPreferences.getInstance();
+    return p.getString(_kLastDevice);
+  }
+
+  Future<void> saveLastDeviceId(String id) async {
+    final p = await SharedPreferences.getInstance();
+    await p.setString(_kLastDevice, id);
+  }
+}

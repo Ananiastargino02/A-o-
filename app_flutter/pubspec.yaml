@@ -1,0 +1,22 @@
+name: veican_app
+description: App do VEICAN - painel, manutencao e diagnostico via Bluetooth (BLE).
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_blue_plus: ^1.32.12   # BLE (Android + iOS)
+  provider: ^6.1.2              # estado
+  shared_preferences: ^2.3.2    # perfil do carro + historico de manutencao (local)
+  intl: ^0.19.0                 # datas
+  cupertino_icons: ^1.0.8
+
+dev_dependencies:
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true

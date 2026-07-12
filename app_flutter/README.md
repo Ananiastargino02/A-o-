@@ -1,0 +1,114 @@
+# VEICAN — App (Flutter)
+
+App Android (e pronto para iOS) que conecta no VEICAN por **Bluetooth (BLE)** e mostra
+o painel ao vivo, manutenção e diagnóstico (falhas). Um único código gera Android **e** iOS.
+
+- **Android:** você gera o APK agora, no Windows, **sem Mac**.
+- **iOS:** o código já está pronto — só precisa de um Mac (ou serviço em nuvem, ex.: Codemagic)
+  na hora de **gerar/publicar** o app da Apple.
+
+---
+
+## 1. Instalar o Flutter (uma vez)
+
+1. Baixe o Flutter SDK: https://docs.flutter.dev/get-started/install/windows
+2. Instale o **Android Studio** (vem com o Android SDK e o emulador).
+3. No terminal, rode `flutter doctor` e resolva o que aparecer com ❌
+   (aceite as licenças com `flutter doctor --android-licenses`).
+
+## 2. Gerar as pastas de plataforma
+
+Este projeto tem só o código (`lib/` e `pubspec.yaml`). As pastas `android/` e `ios/`
+são geradas pelo Flutter. Dentro da pasta `app_flutter`:
+
+```bash
+flutter create --platforms=android,ios --org com.veican .
+flutter pub get
+```
+
+> `flutter create` **não sobrescreve** os arquivos que já existem (o seu `lib/` e o
+> `pubspec.yaml` ficam intactos) — ele só cria o que falta (android/, ios/, etc.).
+
+## 3. Permissões de Bluetooth (Android)
+
+Abra `android/app/src/main/AndroidManifest.xml` e **adicione**, logo acima da tag
+`<application ...>`, estas linhas:
+
+```xml
+<uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+    android:usesPermissionFlags="neverForLocation" />
+<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+<!-- Compatibilidade com Android 11 ou anterior -->
+<uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+<uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
+```
+
+No `android/app/build.gradle`, garanta `minSdkVersion 21` (ou maior).
+
+## 4. Rodar / gerar o APK
+
+Celular Android no cabo com **depuração USB** ligada:
+
+```bash
+flutter run                 # roda no celular pra testar
+flutter build apk --release # gera o APK final
+```
+
+O APK sai em `build/app/outputs/flutter-apk/app-release.apk`.
+Copie pro celular e instale (ative "instalar de fontes desconhecidas").
+
+## 5. iOS (quando tiver Mac)
+
+O código já está pronto. No Mac:
+
+1. Abra `ios/Runner/Info.plist` e adicione:
+
+```xml
+<key>NSBluetoothAlwaysUsageDescription</key>
+<string>O VEICAN usa Bluetooth para ler os dados do seu carro.</string>
+<key>NSBluetoothPeripheralUsageDescription</key>
+<string>O VEICAN usa Bluetooth para ler os dados do seu carro.</string>
+```
+
+2. `flutter build ios` / abrir no Xcode para assinar e publicar.
+
+> Sem Mac dá pra compilar iOS via nuvem (ex.: **Codemagic**, **GitHub Actions com runner macOS**).
+
+---
+
+## Como funciona (protocolo)
+
+O app fala com o firmware pelo **Nordic UART Service (NUS)**:
+
+- Nome anunciado: **VEICAN**
+- Service `6E400001-B5A3-F393-E0A9-E50E24DCCA9E`
+- Write (app→aparelho) `6E400002-...`
+- Notify (aparelho→app) `6E400003-...`
+
+Comandos usados:
+
+| Comando | Resposta |
+|---|---|
+| `STATUS` | `km=.. bat=..V rpm=.. temp=.. vel=.. comb=.. motor=..h..m proto=.. estado=..` |
+| `MANUT LIST` | uma linha por item: `i:nome pct% int=..km/..d` |
+| `MANUT RESET <n>` | `OK: ...` |
+| `MANUT KM <n> <km>` / `MANUT DIAS <n> <dias>` | `OK: ...` |
+| `DTC LER` | `DTC <n>` + uma linha por código |
+| `DTC APAGAR` | `DTC apagados` / `Falha ao apagar` |
+| `ODORESET`, `VOLTCAL <v>`, `KMCAL <r> <m>` | `OK: ...` |
+
+## Estrutura
+
+```
+lib/
+  main.dart              # app + navegacao (abas)
+  theme.dart             # tema escuro (painel automotivo)
+  ble/ble_service.dart   # nucleo BLE (scan, conexao, comandos, fila)
+  models/                # LiveData, CarProfile, MaintItem/Record
+  storage/local_store.dart  # perfil do carro + historico (celular)
+  screens/               # scan, dashboard, manutencao, dtc, perfil
+```
+
+Perfil do carro e histórico de manutenção ficam salvos **no celular** (shared_preferences):
+cada "Resetar" na manutenção grava um registro com data + km.
