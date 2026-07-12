@@ -254,7 +254,7 @@ volatile bool     fuel_2f_declarado = false;   // o carro declara o PID 0x2F no 
 // Ajustavel ao vivo com o comando HYFUEL <id_hex> <byte> <max> p/ outros modelos.
 uint32_t hy_fuel_id   = 0x329;
 uint8_t  hy_fuel_byte = 1;
-uint16_t hy_fuel_max  = 255;
+uint16_t hy_fuel_max  = 200;   // escala p/ CASAR com o ponteiro do carro (180 -> 90%, = 8/9). Ajuste com HYFUEL.
 
 volatile uint16_t debug_log_head = 0;
 volatile uint16_t debug_log_count = 0;
