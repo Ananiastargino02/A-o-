@@ -247,6 +247,7 @@ volatile uint16_t probe_did_ini    = 0;
 volatile uint16_t probe_did_fim    = 0;
 volatile uint32_t probe_reqid      = 0x7E0;
 volatile uint8_t  fuel_metodo = 0;
+volatile bool     fuel_2f_declarado = false;   // o carro declara o PID 0x2F no bitmask? (p/ desambiguar 0xFF cheio vs indisponivel)
 
 volatile uint16_t debug_log_head = 0;
 volatile uint16_t debug_log_count = 0;
@@ -1314,6 +1315,8 @@ void descobrirPIDs() {
     }
     if (!(resp[3] & 0x01)) break;
   }
+  // registra se o carro DECLAROU o 0x2F ANTES de forcar (p/ desambiguar 0xFF = cheio vs indisponivel)
+  fuel_2f_declarado = pid_suportado[0x2F];
   // garante os essenciais: a descoberta pode vir incompleta em barramento cheio
   pid_suportado[0x05] = true;  // temperatura do motor
   pid_suportado[0x0C] = true;  // rpm
@@ -1504,14 +1507,16 @@ int lerDID22(uint32_t reqId, uint16_t did, uint8_t* out, int maxOut) {
 
 void detectarMetodoCombustivel() {
   uint8_t d[8], len;
-  bool ok2F = false;
-  for (int t = 0; t < 3 && !ok2F; t++) {   // barramento cheio: tenta algumas vezes
-    if (obdRequest(0x2F, d, &len) && d[0] != 0xFF) ok2F = true;
+  bool val2F_ok = false;    // respondeu com valor valido (<0xFF)
+  for (int t = 0; t < 3 && !val2F_ok; t++) {   // barramento cheio: tenta algumas vezes
+    if (obdRequest(0x2F, d, &len) && d[0] != 0xFF) val2F_ok = true;
     else vTaskDelay(pdMS_TO_TICKS(80));
   }
-  if (ok2F) {
+  // Usa 0x2F se o carro DECLARA o PID (bitmask) OU se ja veio um valor valido.
+  // (Se declara mas leu 0xFF agora, e so tanque CHEIO = 100%, nao "indisponivel".)
+  if (fuel_2f_declarado || val2F_ok) {
     fuel_metodo = 1;
-    Serial.println("[Fuel] metodo = PID 0x2F (padrao)");
+    Serial.printf("[Fuel] metodo = PID 0x2F (declarado=%d, valor_visto=%d)\n", fuel_2f_declarado, val2F_ok);
     return;
   }
   uint8_t vin[20];
@@ -1535,7 +1540,7 @@ int lerCombustivelPct() {
   if (fuel_metodo == 1) {
     uint8_t d[8], len;
     if (obdRequest(0x2F, d, &len)) {
-      if (d[0] == 0xFF) return -1;
+      if (d[0] == 0xFF) return 100;   // metodo 1 = carro suporta 0x2F -> 0xFF e tanque CHEIO (100%)
       return (d[0] * 100) / 255;
     }
     return -1;
