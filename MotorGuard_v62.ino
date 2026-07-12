@@ -2378,61 +2378,51 @@ void taskCAN(void* param) {
     int valor;
     static int falhas_rpm = 0;  // leituras seguidas sem resposta
     static uint32_t ult_resp_ok = millis();  // ultima resposta valida do CAN
+    static uint8_t temp_src = 0x05;          // fonte de temperatura (0x05 padrao ou 0x67 fallback)
 
-    // ===== RPM: gatilho de tudo. CORRECAO D =====
+    // ===== RPM: le e PUBLICA JA (responsivo — nao espera os PIDs lentos p/ mostrar aceleracao) =====
     valor = lerPID_int(0x0C, f_rpm);
-    if (valor < 0) {                       // 1 retry rapido antes de contar falha (barramento cheio)
-      vTaskDelay(pdMS_TO_TICKS(15));
-      valor = lerPID_int(0x0C, f_rpm);
-    }
+    if (valor < 0) { vTaskDelay(pdMS_TO_TICKS(12)); valor = lerPID_int(0x0C, f_rpm); }  // 1 retry
     if (valor >= 0) { ultimo.rpm = valor; falhas_rpm = 0; ult_resp_ok = millis(); }
     else if (++falhas_rpm >= 5) {
-      // So considera "motor desligado" (zera RPM/vel -> tela volta p/ BATERIA) se a TENSAO
-      // confirmar que o alternador parou. Com o carro ligado (tensao > 13V) uma sequencia de
-      // falhas e congestionamento do barramento: mantem a ultima leitura para a tela NAO parar.
-      if (ultimo.tensao > 0 && ultimo.tensao < TENSAO_WAKE) {
-        ultimo.rpm = 0; ultimo.velocidade = 0;
-      } else {
-        falhas_rpm = 5;   // trava o contador (nao estoura) e segura a ultima leitura
-      }
+      // so zera (motor desligado) se a TENSAO confirmar; senao segura a ultima leitura (barramento cheio)
+      if (ultimo.tensao > 0 && ultimo.tensao < TENSAO_WAKE) { ultimo.rpm = 0; ultimo.velocidade = 0; }
+      else falhas_rpm = 5;
     }
-    vTaskDelay(pdMS_TO_TICKS(30));
+    if (xSemaphoreTake(mutex_dados, pdMS_TO_TICKS(20)) == pdTRUE) { dados_publicos = ultimo; xSemaphoreGive(mutex_dados); }  // <<< RPM na tela ja
+    vTaskDelay(pdMS_TO_TICKS(12));
 
-    valor = lerPID_int(0x0D, f_vel);  if (valor >= 0) { ultimo.velocidade = valor; ult_resp_ok = millis(); }  vTaskDelay(pdMS_TO_TICKS(30));
-    // Temperatura: PID 0x05 padrao. Se o carro nao responde 0x05 (ex.: HB20 2026),
-    // usa o PID 0x67 (ECT sensor), cuja temp da agua fica no byte B (d[1]-40).
-    // Uma vez descoberto, fica travado na fonte que funciona (nao sonda as duas toda hora).
-    static uint8_t temp_src = 0x05;
-    valor = PID_ERRO;
-    if (temp_src == 0x05) {
-      valor = lerPID_int(0x05, f_temp);
-      if (valor < -40) {
-        uint8_t d67[8], l67 = 0;
-        if (obdRequest(0x67, d67, &l67) && l67 >= 2) { valor = d67[1] - 40; temp_src = 0x67; Serial.println("[TEMP] 0x05 mudo -> usando PID 0x67 (byte B)"); }
+    // ===== velocidade: toda volta (odometro + tela) =====
+    valor = lerPID_int(0x0D, f_vel); if (valor >= 0) { ultimo.velocidade = valor; ult_resp_ok = millis(); }
+    vTaskDelay(pdMS_TO_TICKS(12));
+
+    // ===== 1 PID LENTO por ciclo, revezando (temp / tensao / combustivel) — mantem o RPM rapido =====
+    switch (ciclo % 3) {
+      case 0:   // temperatura (0x05 padrao; fallback 0x67 byte B p/ HB20 etc.)
+        valor = PID_ERRO;
+        if (temp_src == 0x05) {
+          valor = lerPID_int(0x05, f_temp);
+          if (valor < -40) { uint8_t d67[8], l67 = 0; if (obdRequest(0x67, d67, &l67) && l67 >= 2) { valor = d67[1] - 40; temp_src = 0x67; Serial.println("[TEMP] 0x05 mudo -> usando PID 0x67 (byte B)"); } }
+        } else { uint8_t d67[8], l67 = 0; if (obdRequest(0x67, d67, &l67) && l67 >= 2) valor = d67[1] - 40; }
+        if (valor >= -40) { ultimo.temp_motor = valor; ult_resp_ok = millis(); }
+        break;
+      case 1: { // tensao (0x42, senao ADC)
+        float v = lerPID_float(0x42, f_tensao);
+        if (v < 0) v = lerTensaoADC();
+        if (v >= 0) ultimo.tensao = v;
+        break;
       }
-    } else {
-      uint8_t d67[8], l67 = 0;
-      if (obdRequest(0x67, d67, &l67) && l67 >= 2) valor = d67[1] - 40;
+      case 2:   // combustivel
+        valor = lerCombustivelPct(); if (valor >= 0) ultimo.combust = valor;
+        break;
     }
-    if (valor >= -40) { ultimo.temp_motor = valor; ult_resp_ok = millis(); }
-    vTaskDelay(pdMS_TO_TICKS(30));
-    float v_tensao = lerPID_float(0x42, f_tensao);
-    if (v_tensao < 0) v_tensao = lerTensaoADC();
-    if (v_tensao >= 0) ultimo.tensao = v_tensao;
-    vTaskDelay(pdMS_TO_TICKS(30));
-    if ((ciclo % 4) == 0) {
-      valor = lerCombustivelPct(); if (valor >= 0) ultimo.combust = valor; vTaskDelay(pdMS_TO_TICKS(30));
-    }
-    // Desconectou o OBD (ou perdeu o CAN de vez): apos ~3s SEM nenhuma resposta valida,
-    // limpa a tela em vez de congelar os ultimos valores. (Congestionamento curto ainda
-    // segura o valor; so limpa quando some mesmo.)
+    vTaskDelay(pdMS_TO_TICKS(12));
+
+    // desconectou / perdeu CAN: apos ~3s sem resposta limpa a tela (nao congela)
     if ((millis() - ult_resp_ok) > 3000) {
       ultimo.rpm = 0; ultimo.velocidade = 0; ultimo.temp_motor = PID_ERRO; ultimo.combust = -1;
     }
-    if (xSemaphoreTake(mutex_dados, pdMS_TO_TICKS(50)) == pdTRUE) {
-      dados_publicos = ultimo;
-      xSemaphoreGive(mutex_dados);
-    }
+    if (xSemaphoreTake(mutex_dados, pdMS_TO_TICKS(20)) == pdTRUE) { dados_publicos = ultimo; xSemaphoreGive(mutex_dados); }
     // auto-recuperacao: so reinstala apos travamento LONGO real (15s sem resposta com motor ligado)
     if (ultimo.tensao > TENSAO_WAKE && (millis() - ult_resp_ok) > 15000) {
       Serial.println("[CAN] travado 15s -> reiniciando driver");
