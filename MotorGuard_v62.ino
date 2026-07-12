@@ -244,6 +244,7 @@ volatile bool     probe_pedir_m22  = false;
 volatile int      probe_pid_pedido = -1;   // comando "PID xx": sonda 1 PID e loga cru
 volatile bool     probe_temp_scan  = false; // comando "TEMPSCAN": testa PIDs de temperatura
 volatile bool     probe_candump    = false; // comando "CANDUMP": lista todos os frames do barramento
+volatile bool     probe_fuelwatch  = false; // comando "FUELWATCH": mostra candidatos de combustivel ao vivo
 volatile uint16_t probe_did_ini    = 0;
 volatile uint16_t probe_did_fim    = 0;
 volatile uint32_t probe_reqid      = 0x7E0;
@@ -2514,6 +2515,25 @@ void taskCAN(void* param) {
       Serial.printf("[DUMP] %d IDs. Ache o byte do combustivel (tanque ~70%%: procure ~B3 se 0-255, ~46 se 0-100, ~23-2D se litros).\n", nf);
       Serial.println("====\n");
     }
+    if (probe_fuelwatch) {
+      probe_fuelwatch = false;
+      Serial.println("\n===== FUELWATCH (candidatos de combustivel ao vivo) =====");
+      Serial.println("ANDE p/ variar o tanque e veja qual acompanha o PONTEIRO. Tecla p/ parar.");
+      struct { uint32_t id; uint8_t b; } cand[] = { {0x329,1}, {0x280,3}, {0x130,1}, {0x2A0,4}, {0x131,4}, {0x43F,1} };
+      uint32_t t0 = millis();
+      while (millis() - t0 < 120000) {
+        if (Serial.available()) { while (Serial.available()) Serial.read(); break; }
+        Serial.print("[FW]");
+        for (int i = 0; i < 6; i++) {
+          int v = lerFrameByte(cand[i].id, cand[i].b, 150);
+          if (v >= 0) Serial.printf("  %lX.%d=%d(%d%%)", (unsigned long)cand[i].id, cand[i].b, v, v * 100 / 255);
+          else        Serial.printf("  %lX.%d=--", (unsigned long)cand[i].id, cand[i].b);
+        }
+        Serial.println();
+        vTaskDelay(pdMS_TO_TICKS(500));
+      }
+      Serial.println("===== fim FUELWATCH =====\n");
+    }
     if (probe_pid_pedido >= 0) {
       uint8_t p = (uint8_t)probe_pid_pedido; probe_pid_pedido = -1;
       uint8_t d[8], len = 0;
@@ -4160,6 +4180,7 @@ void taskSerial(void* param) {
         else if (buf == "FUEL") { probe_pedir_fuel = true; Serial.println(">>> lendo 0x2F..."); }
         else if (buf == "TEMPSCAN") { probe_temp_scan = true; Serial.println(">>> procurando o PID de temperatura..."); }
         else if (buf == "CANDUMP") { probe_candump = true; Serial.println(">>> capturando frames do barramento..."); }
+        else if (buf == "FUELWATCH") { probe_fuelwatch = true; Serial.println(">>> observando candidatos de combustivel..."); }
         else if (buf.startsWith("HYFUEL ")) {   // ajusta o combustivel broadcast Hyundai: HYFUEL <id_hex> <byte> <max>
           const char* s = buf.c_str() + 7;
           hy_fuel_id = (uint32_t)strtol(s, NULL, 16);
