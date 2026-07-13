@@ -136,8 +136,21 @@ class BleService extends ChangeNotifier {
     _txSub = _tx!.onValueReceived.listen(_onDados);
 
     _setConn(VConn.conectado);
+    await _syncSpeedDevice();   // puxa o historico gravado no aparelho
     await _carregarRecordes();
     _startPolling();
+  }
+
+  /// Ao conectar, puxa o historico de velocidade do aparelho (SPEEDHIST) e junta
+  /// com o local -> registra ate os passeios sem o celular por perto.
+  Future<void> _syncSpeedDevice() async {
+    try {
+      final r = await enviar('SPEEDHIST', timeout: const Duration(seconds: 6));
+      if (r.contains(':')) {
+        final n = await speedStore.mergeDevice(r);
+        if (n > 0) debugPrint('[SPEED] sincronizados $n dias do aparelho');
+      }
+    } catch (_) {}
   }
 
   // ---------------- Polling automatico (roda enquanto conectado) ----------------

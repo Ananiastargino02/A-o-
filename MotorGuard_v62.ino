@@ -51,6 +51,7 @@
 // BLE via NimBLE-Arduino (h2zero): ~30-50 KB de RAM a menos que o Bluedroid.
 // O Bluedroid nao cabia (so ~90 KB livres -> crash LoadProhibited no boot).
 #include <NimBLEDevice.h>
+#include <Preferences.h>   // NVS interna do ESP32 (historico de velocidade)
 
 // (fontes agora sao do LVGL: montserrat 14/28/40)
 
@@ -3664,6 +3665,77 @@ void taskTela(void* param) {
 }
 
 // ============================================================
+//  HISTORICO DE VELOCIDADE MAXIMA por dia (na NVS interna do ESP32).
+//  Grava mesmo SEM celular (usa o RTC pra datar). O app sincroniza pelo
+//  comando SPEEDHIST e junta com o historico local dele.
+// ============================================================
+#define SPEED_HIST_MAX 90
+struct SpeedDia { uint32_t dia; uint8_t vel; } __attribute__((packed));  // dia = AAAAMMDD
+SpeedDia speedHist[SPEED_HIST_MAX];
+int speedHistN = 0;
+bool speedDirty = false;
+uint32_t speedUltFlush = 0;
+Preferences speedPrefs;
+
+static uint32_t speedHojeAAAAMMDD() {
+  if (!rtc_ok) return 0;
+  DateTime n = rtcNow();
+  return (uint32_t)n.year() * 10000UL + (uint32_t)n.month() * 100UL + n.day();
+}
+
+void speedCarregar() {
+  speedPrefs.begin("veican", true);   // read-only
+  int n = speedPrefs.getInt("sn", 0);
+  size_t got = speedPrefs.getBytesLength("shist");
+  if (n > 0 && n <= SPEED_HIST_MAX && got == (size_t)n * sizeof(SpeedDia)) {
+    speedPrefs.getBytes("shist", speedHist, got);
+    speedHistN = n;
+  }
+  speedPrefs.end();
+  Serial.printf("[SPEED] historico carregado: %d dias\n", speedHistN);
+}
+
+void speedFlush() {
+  if (!speedDirty) return;
+  if (millis() - speedUltFlush < 5000) return;   // pouca escrita na flash
+  speedPrefs.begin("veican", false);  // rw
+  speedPrefs.putInt("sn", speedHistN);
+  speedPrefs.putBytes("shist", speedHist, speedHistN * sizeof(SpeedDia));
+  speedPrefs.end();
+  speedDirty = false;
+  speedUltFlush = millis();
+}
+
+// Registra a velocidade atual: guarda o MAXIMO do dia. Chamado ~1x/s pelo loop().
+void speedRegistrar(int vel) {
+  if (vel <= 0 || vel > 400) return;
+  uint32_t dia = speedHojeAAAAMMDD();
+  if (dia == 0) return;   // sem RTC nao dateia
+  for (int i = 0; i < speedHistN; i++) {
+    if (speedHist[i].dia == dia) {
+      if (vel > speedHist[i].vel) { speedHist[i].vel = vel; speedDirty = true; }
+      return;
+    }
+  }
+  if (speedHistN < SPEED_HIST_MAX) {
+    speedHist[speedHistN].dia = dia; speedHist[speedHistN].vel = vel; speedHistN++;
+  } else {
+    for (int i = 1; i < SPEED_HIST_MAX; i++) speedHist[i - 1] = speedHist[i];  // ring: solta o mais antigo
+    speedHist[SPEED_HIST_MAX - 1].dia = dia; speedHist[SPEED_HIST_MAX - 1].vel = vel;
+  }
+  speedDirty = true;
+}
+
+// Monta a resposta: "SPEEDHIST <n>\nAAAAMMDD:vel\n..."
+String speedHistString() {
+  String r = "SPEEDHIST " + String(speedHistN) + "\n";
+  for (int i = 0; i < speedHistN; i++) {
+    r += String(speedHist[i].dia) + ":" + String(speedHist[i].vel) + "\n";
+  }
+  return r;
+}
+
+// ============================================================
 //  BLUETOOTH (BLE) - comandos do app (espelha comandos uteis)
 // ============================================================
 #define BLE_SVC_UUID "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
@@ -3754,6 +3826,7 @@ String executarComandoApp(String cmd) {
     return String("OK: ") + NOMES_ITENS[n] + " intervalo = " + String(dias) + " dias";
   }
   if (up == "ODORESET") { formatarHodometro(); return "OK: hodometro zerado"; }
+  if (up == "SPEEDHIST") return speedHistString();   // historico de velocidade (gravado no aparelho)
 
   // ===== Diagnostico (DTCs) via BLE: dispara a leitura na taskCAN e espera o resultado =====
   if (up == "DTC LER") {
@@ -3906,6 +3979,8 @@ void setup() {
   xTaskCreatePinnedToCore(taskSerial,    "Serial", 4096, NULL, 1, NULL, 1);
   xTaskCreatePinnedToCore(taskBotoes,    "Botoes", 4096, NULL, 2, NULL, 1);
 
+  speedCarregar();   // historico de velocidade (NVS)
+
   Serial.printf("[HEAP] antes do BLE = %u bytes\n", ESP.getFreeHeap());
   initBLE();
   Serial.printf("[HEAP] livre apos setup (BLE ON) = %u bytes\n", ESP.getFreeHeap());
@@ -3937,6 +4012,14 @@ void loop() {
     NimBLEServer* s = NimBLEDevice::getServer();
     if (s && s->getConnectedCount() == 0) NimBLEDevice::startAdvertising();
   }
+
+  // ===== grava a VELOCIDADE MAXIMA do dia (na NVS, mesmo sem celular) =====
+  int velAtual = 0;
+  if (xSemaphoreTake(mutex_dados, pdMS_TO_TICKS(20)) == pdTRUE) {
+    velAtual = dados_publicos.velocidade; xSemaphoreGive(mutex_dados);
+  }
+  if (velAtual > 0) speedRegistrar(velAtual);
+  speedFlush();   // grava na flash so quando mudou (throttle interno)
 
   if (agora > 20000) {
     if ((agora - hb_tela > 12000) || (agora - hb_botoes > 12000)) {
@@ -4197,6 +4280,7 @@ void taskSerial(void* param) {
         else if (buf == "DEBUGRESET SIM") { formatarDebugLog(); Serial.println(">>> Debug log limpo"); }
         else if (buf == "DEBUGRESET") Serial.println(">>> Apaga o log de debug. Confirme com: DEBUGRESET SIM");
         else if (buf == "FUEL") { probe_pedir_fuel = true; Serial.println(">>> lendo 0x2F..."); }
+        else if (buf == "SPEEDHIST") Serial.print(speedHistString());
         else if (buf == "TEMPSCAN") { probe_temp_scan = true; Serial.println(">>> procurando o PID de temperatura..."); }
         else if (buf == "CANDUMP") { probe_candump = true; Serial.println(">>> capturando frames do barramento..."); }
         else if (buf == "FUELWATCH") { probe_fuelwatch = true; Serial.println(">>> observando candidatos de combustivel..."); }

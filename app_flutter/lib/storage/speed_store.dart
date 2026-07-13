@@ -74,6 +74,33 @@ class SpeedStore {
     _loaded = true;
     await _save();
   }
+
+  /// Junta o historico vindo do aparelho (comando SPEEDHIST): linhas "AAAAMMDD:vel".
+  /// Pega o MAIOR entre o do aparelho e o local, por dia. Retorna quantos dias mudaram.
+  Future<int> mergeDevice(String resp) async {
+    await _ensure();
+    int mudou = 0;
+    for (final linha in resp.split('\n')) {
+      final l = linha.trim();
+      if (!l.contains(':')) continue;
+      final p = l.split(':');
+      final aaaammdd = int.tryParse(p[0]);
+      final vel = int.tryParse(p[1]);
+      if (aaaammdd == null || vel == null || vel <= 0) continue;
+      if (aaaammdd < 20000101) continue; // ignora o cabecalho "SPEEDHIST n"
+      final ano = aaaammdd ~/ 10000;
+      final mes = (aaaammdd ~/ 100) % 100;
+      final dia = aaaammdd % 100;
+      final key =
+          '$ano-${mes.toString().padLeft(2, '0')}-${dia.toString().padLeft(2, '0')}';
+      if (vel > (_daily[key] ?? 0)) {
+        _daily[key] = vel;
+        mudou++;
+      }
+    }
+    if (mudou > 0) await _save();
+    return mudou;
+  }
 }
 
 /// Um ponto do grafico (rotulo + velocidade + data de referencia).
