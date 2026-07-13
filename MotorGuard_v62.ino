@@ -3825,6 +3825,7 @@ void initBLE() {
   svc->start();
   NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
   adv->addServiceUUID(BLE_SVC_UUID);
+  adv->setName("VEICAN");   // poe o nome no pacote de advertising (o app procura por nome)
 #if defined(NIMBLE_CPP_VERSION_MAJOR) && (NIMBLE_CPP_VERSION_MAJOR >= 2)
   adv->enableScanResponse(true);
 #else
