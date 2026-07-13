@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'theme.dart';
 import 'ble/ble_service.dart';
+import 'state/app_settings.dart';
 import 'screens/scan_screen.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/maintenance_screen.dart';
@@ -19,8 +20,11 @@ class VeicanApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ChangeNotifierProvider(
-      create: (_) => BleService(),
+    return MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => BleService()),
+        ChangeNotifierProvider(create: (_) => AppSettings()),
+      ],
       child: MaterialApp(
         title: 'VEICAN',
         debugShowCheckedModeBanner: false,

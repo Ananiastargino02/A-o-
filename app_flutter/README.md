@@ -127,8 +127,10 @@ lib/
 
 **Abas:** Painel · Manutenção · **Consertos** · Falhas · Carro.
 
-- **Painel:** dados ao vivo + **gráfico de RPM em tempo real** + card de **velocidade**
-  (atual / máx. do dia / recorde) que abre o **Histórico de Velocidade**.
+- **Painel:** dados ao vivo em **4 estilos que o usuário escolhe** (Cartões, Esportivo
+  com medidores circulares, Minimalista, Cockpit neon) — botão de ajuste ⚙️ abre a
+  tela de seleção com prévia. Inclui **gráfico de RPM em tempo real** e card de
+  **velocidade** (atual / máx. do dia / recorde) que abre o **Histórico de Velocidade**.
 - **Histórico de Velocidade:** grava a **velocidade máxima de cada dia** (enquanto o app
   está conectado) e mostra em **gráfico por Dia / Mês / Ano**, com o **recorde de todos os
   tempos e a data**. Ex.: "atingiu 150 km/h em 12 de julho de 2026".
