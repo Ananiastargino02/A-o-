@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import '../models/live_data.dart';
+import '../storage/speed_store.dart';
 
 /// UUIDs do Nordic UART Service (NUS) — devem casar com o firmware do VEICAN.
 class VUuids {
@@ -28,6 +29,13 @@ class BleService extends ChangeNotifier {
   /// Historico recente do RPM (p/ o grafico ao vivo). Guarda ~60 amostras.
   final List<double> rpmHist = [];
   static const int _maxHist = 60;
+
+  /// Historico de velocidade (maxima por dia) + recorde.
+  final speedStore = SpeedStore();
+  int speedMaxHoje = 0;
+  int speedRecorde = 0;
+  DateTime? speedRecordeData;
+  Timer? _pollTimer;
   BluetoothDevice? _device;
   BluetoothCharacteristic? _rx;
   BluetoothCharacteristic? _tx;
@@ -128,6 +136,34 @@ class BleService extends ChangeNotifier {
     _txSub = _tx!.onValueReceived.listen(_onDados);
 
     _setConn(VConn.conectado);
+    await _carregarRecordes();
+    _startPolling();
+  }
+
+  // ---------------- Polling automatico (roda enquanto conectado) ----------------
+
+  void _startPolling() {
+    _pollTimer?.cancel();
+    // le o STATUS ~1x/seg sozinho -> grava velocidade e alimenta os graficos
+    _pollTimer = Timer.periodic(const Duration(milliseconds: 1200), (_) {
+      atualizarStatus();
+    });
+    atualizarStatus(); // primeira leitura imediata
+  }
+
+  void _stopPolling() {
+    _pollTimer?.cancel();
+    _pollTimer = null;
+  }
+
+  Future<void> _carregarRecordes() async {
+    speedMaxHoje = await speedStore.maxHoje();
+    final rec = await speedStore.recorde();
+    if (rec != null) {
+      speedRecorde = rec.key;
+      speedRecordeData = rec.value;
+    }
+    notifyListeners();
   }
 
   Future<void> desconectar() async {
@@ -142,6 +178,7 @@ class BleService extends ChangeNotifier {
   }
 
   void _limpar() {
+    _stopPolling();
     _txSub?.cancel();
     _connSub?.cancel();
     _respTimer?.cancel();
@@ -210,6 +247,17 @@ class BleService extends ChangeNotifier {
       live = LiveData.parse(r);
       rpmHist.add(live!.rpm.toDouble());
       if (rpmHist.length > _maxHist) rpmHist.removeAt(0);
+
+      // registra a velocidade no historico (grava so quando o maximo do dia sobe)
+      final v = live!.velocidade;
+      if (v > 0) {
+        if (v > speedMaxHoje) speedMaxHoje = v;
+        final mudou = await speedStore.record(v);
+        if (mudou && v > speedRecorde) {
+          speedRecorde = v;
+          speedRecordeData = DateTime.now();
+        }
+      }
       notifyListeners();
     }
   }

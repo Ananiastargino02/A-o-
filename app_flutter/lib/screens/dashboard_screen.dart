@@ -1,39 +1,17 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../ble/ble_service.dart';
 import '../models/live_data.dart';
 import '../theme.dart';
 import '../widgets/rpm_chart.dart';
+import 'speed_history_screen.dart';
 
-class DashboardScreen extends StatefulWidget {
+class DashboardScreen extends StatelessWidget {
   const DashboardScreen({super.key});
-  @override
-  State<DashboardScreen> createState() => _DashboardScreenState();
-}
-
-class _DashboardScreenState extends State<DashboardScreen> {
-  Timer? _poll;
-
-  @override
-  void initState() {
-    super.initState();
-    _poll = Timer.periodic(const Duration(milliseconds: 1200), (_) {
-      context.read<BleService>().atualizarStatus();
-    });
-    // primeira leitura imediata
-    WidgetsBinding.instance.addPostFrameCallback(
-        (_) => context.read<BleService>().atualizarStatus());
-  }
-
-  @override
-  void dispose() {
-    _poll?.cancel();
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) {
+    // O BleService faz o polling do STATUS sozinho enquanto conectado.
     final ble = context.watch<BleService>();
     final d = ble.live;
 
@@ -58,6 +36,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   _RpmGauge(rpm: d.rpm),
                   const SizedBox(height: 12),
                   RpmChart(dados: ble.rpmHist),
+                  const SizedBox(height: 12),
+                  _SpeedCard(
+                    velAtual: d.velocidade,
+                    maxHoje: ble.speedMaxHoje,
+                    recorde: ble.speedRecorde,
+                    recordeData: ble.speedRecordeData,
+                    onTap: () => Navigator.push(context,
+                        MaterialPageRoute(builder: (_) => const SpeedHistoryScreen())),
+                  ),
                   const SizedBox(height: 16),
                   Row(children: [
                     Expanded(
@@ -268,4 +255,81 @@ class _Stat extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Card de velocidade: atual, maxima do dia e recorde. Abre o historico.
+class _SpeedCard extends StatelessWidget {
+  final int velAtual, maxHoje, recorde;
+  final DateTime? recordeData;
+  final VoidCallback onTap;
+  const _SpeedCard(
+      {required this.velAtual,
+      required this.maxHoje,
+      required this.recorde,
+      required this.recordeData,
+      required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final dataRec = recordeData != null
+        ? '${recordeData!.day.toString().padLeft(2, '0')}/${recordeData!.month.toString().padLeft(2, '0')}/${recordeData!.year}'
+        : '--';
+    return InkWell(
+      borderRadius: BorderRadius.circular(16),
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: VColors.card,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: VColors.line),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.show_chart, size: 16, color: VColors.textDim),
+                const SizedBox(width: 6),
+                const Text('VELOCIDADE',
+                    style: TextStyle(color: VColors.textDim, letterSpacing: 2, fontSize: 12)),
+                const Spacer(),
+                const Text('Historico ',
+                    style: TextStyle(color: VColors.cyan, fontSize: 12)),
+                const Icon(Icons.chevron_right, size: 16, color: VColors.cyan),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                _mini('AGORA', '$velAtual', VColors.cyan),
+                _div(),
+                _mini('MAX HOJE', '$maxHoje', VColors.amber),
+                _div(),
+                _mini('RECORDE', '$recorde', VColors.red, sub: dataRec),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _mini(String label, String valor, Color cor, {String? sub}) {
+    return Expanded(
+      child: Column(
+        children: [
+          Text(label, style: const TextStyle(color: VColors.textFaint, fontSize: 10)),
+          const SizedBox(height: 4),
+          Text(valor,
+              style: TextStyle(color: cor, fontSize: 24, fontWeight: FontWeight.bold)),
+          const Text('km/h', style: TextStyle(color: VColors.textFaint, fontSize: 10)),
+          if (sub != null)
+            Text(sub, style: const TextStyle(color: VColors.textFaint, fontSize: 10)),
+        ],
+      ),
+    );
+  }
+
+  Widget _div() => Container(width: 1, height: 44, color: VColors.line);
 }
