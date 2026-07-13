@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../ble/ble_service.dart';
 import '../models/live_data.dart';
 import '../theme.dart';
+import '../widgets/rpm_chart.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -55,6 +56,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 padding: const EdgeInsets.all(16),
                 children: [
                   _RpmGauge(rpm: d.rpm),
+                  const SizedBox(height: 12),
+                  RpmChart(dados: ble.rpmHist),
                   const SizedBox(height: 16),
                   Row(children: [
                     Expanded(

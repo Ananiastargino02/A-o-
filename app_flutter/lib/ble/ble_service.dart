@@ -24,6 +24,10 @@ class BleService extends ChangeNotifier {
   VConn conn = VConn.desconectado;
   String? erro;
   LiveData? live;
+
+  /// Historico recente do RPM (p/ o grafico ao vivo). Guarda ~60 amostras.
+  final List<double> rpmHist = [];
+  static const int _maxHist = 60;
   BluetoothDevice? _device;
   BluetoothCharacteristic? _rx;
   BluetoothCharacteristic? _tx;
@@ -204,6 +208,8 @@ class BleService extends ChangeNotifier {
     final r = await enviar('STATUS');
     if (r.isNotEmpty && r.contains('rpm=')) {
       live = LiveData.parse(r);
+      rpmHist.add(live!.rpm.toDouble());
+      if (rpmHist.length > _maxHist) rpmHist.removeAt(0);
       notifyListeners();
     }
   }

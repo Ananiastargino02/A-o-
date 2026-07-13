@@ -5,6 +5,7 @@ import 'ble/ble_service.dart';
 import 'screens/scan_screen.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/maintenance_screen.dart';
+import 'screens/repairs_screen.dart';
 import 'screens/dtc_screen.dart';
 import 'screens/profile_screen.dart';
 
@@ -54,6 +55,7 @@ class _HomeShellState extends State<HomeShell> {
   final _telas = const [
     DashboardScreen(),
     MaintenanceScreen(),
+    RepairsScreen(),
     DtcScreen(),
     ProfileScreen(),
   ];
@@ -76,6 +78,10 @@ class _HomeShellState extends State<HomeShell> {
               icon: Icon(Icons.build_outlined),
               selectedIcon: Icon(Icons.build, color: VColors.cyan),
               label: 'Manutencao'),
+          NavigationDestination(
+              icon: Icon(Icons.handyman_outlined),
+              selectedIcon: Icon(Icons.handyman, color: VColors.cyan),
+              label: 'Consertos'),
           NavigationDestination(
               icon: Icon(Icons.warning_amber_outlined),
               selectedIcon: Icon(Icons.warning_amber, color: VColors.cyan),

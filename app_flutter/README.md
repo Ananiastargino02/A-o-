@@ -44,7 +44,17 @@ Abra `android/app/src/main/AndroidManifest.xml` e **adicione**, logo acima da ta
 <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
 ```
 
+Para as **fotos dos consertos** (câmera/galeria), adicione também, dentro do
+`<application ...>`, ou junto das permissões acima:
+
+```xml
+<uses-feature android:name="android.hardware.camera" android:required="false" />
+```
+
 No `android/app/build.gradle`, garanta `minSdkVersion 21` (ou maior).
+
+> O `image_picker` usa o app de câmera/galeria do sistema, então no Android
+> normalmente não precisa de permissão de CAMERA em tempo de execução.
 
 ## 4. Rodar / gerar o APK
 
@@ -69,6 +79,10 @@ O código já está pronto. No Mac:
 <string>O VEICAN usa Bluetooth para ler os dados do seu carro.</string>
 <key>NSBluetoothPeripheralUsageDescription</key>
 <string>O VEICAN usa Bluetooth para ler os dados do seu carro.</string>
+<key>NSCameraUsageDescription</key>
+<string>Usado para fotografar os consertos do carro.</string>
+<key>NSPhotoLibraryUsageDescription</key>
+<string>Usado para anexar fotos aos consertos.</string>
 ```
 
 2. `flutter build ios` / abrir no Xcode para assinar e publicar.
@@ -102,13 +116,20 @@ Comandos usados:
 
 ```
 lib/
-  main.dart              # app + navegacao (abas)
-  theme.dart             # tema escuro (painel automotivo)
-  ble/ble_service.dart   # nucleo BLE (scan, conexao, comandos, fila)
-  models/                # LiveData, CarProfile, MaintItem/Record
-  storage/local_store.dart  # perfil do carro + historico (celular)
-  screens/               # scan, dashboard, manutencao, dtc, perfil
+  main.dart               # app + navegacao (5 abas)
+  theme.dart              # tema escuro (painel automotivo)
+  ble/ble_service.dart    # nucleo BLE (scan, conexao, comandos, fila) + historico RPM
+  models/                 # LiveData, CarProfile, MaintItem/Record, RepairRecord
+  storage/                # local_store (perfil/manutencao) + repair_store (consertos+fotos)
+  widgets/rpm_chart.dart  # grafico de RPM ao vivo (fl_chart)
+  screens/                # scan, dashboard, manutencao, consertos, dtc, perfil
 ```
 
-Perfil do carro e histórico de manutenção ficam salvos **no celular** (shared_preferences):
-cada "Resetar" na manutenção grava um registro com data + km.
+**Abas:** Painel · Manutenção · **Consertos** · Falhas · Carro.
+
+- **Painel:** dados ao vivo + **gráfico de RPM em tempo real**.
+- **Consertos:** o usuário documenta cada revisão/reparo (título, descrição, data,
+  km, custo, oficina) e anexa **fotos** (câmera ou galeria). Fica tudo salvo no celular.
+
+Perfil do carro, histórico de manutenção e os consertos (com fotos) ficam salvos
+**no celular** (shared_preferences + arquivos locais). Nada vai pra internet.

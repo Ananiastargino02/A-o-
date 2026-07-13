@@ -13,6 +13,9 @@ dependencies:
   provider: ^6.1.2              # estado
   shared_preferences: ^2.3.2    # perfil do carro + historico de manutencao (local)
   intl: ^0.19.0                 # datas
+  fl_chart: ^0.69.2             # graficos (RPM ao vivo)
+  image_picker: ^1.1.2          # tirar/escolher fotos dos consertos
+  path_provider: ^2.1.5         # pasta local p/ salvar as fotos
   cupertino_icons: ^1.0.8
 
 dev_dependencies:
