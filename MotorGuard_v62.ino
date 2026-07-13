@@ -2959,8 +2959,8 @@ void montarCockpit1() {
 
   lblVel = lv_label_create(gCockpit);
   lv_label_set_text(lblVel, "0");
-  lv_obj_set_style_text_font(lblVel, &lv_font_montserrat_48, 0);
-  lv_obj_set_style_transform_zoom(lblVel, 512, 0);   // ~2x (fonte 48 -> ~96px)
+  lv_obj_set_style_text_font(lblVel, &lv_font_montserrat_40, 0);   // 40 = a maior habilitada no lv_conf
+  lv_obj_set_style_transform_zoom(lblVel, 640, 0);   // ~2.5x (fonte 40 -> ~100px)
   lv_obj_set_style_text_color(lblVel, lv_color_white(), 0);
   lv_obj_align(lblVel, LV_ALIGN_CENTER, 0, -34);
   rotulo(gCockpit, "km/h", &lv_font_montserrat_14, 0x90A4AE, LV_ALIGN_CENTER, 0, 22);
