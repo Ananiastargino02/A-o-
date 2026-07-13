@@ -184,7 +184,7 @@ volatile uint32_t log_total = 0;
 volatile uint8_t pagina_atual = 0;
 volatile uint8_t pagina_anterior = 255;
 volatile bool entrou_pagina = false;  // true no 1o frame apos trocar de pagina (forca redesenho)
-const uint8_t TOTAL_PAGINAS = 5;  // NOVO: +1 para página de ajuste de hora/data
+const uint8_t TOTAL_PAGINAS = 6;  // 0 cockpit,1 diag,2 sistema,3 manut,4 ajuste,5 temas
 
 // ===== NOVO: Estados da página de ajuste de hora/data =====
 #define AJUSTE_ESTADO_MENU    0
@@ -2770,6 +2770,9 @@ static lv_obj_t *gCockpit;
 static lv_obj_t *meter; static lv_meter_indicator_t *indArco;
 static lv_obj_t *lblVel, *lblRpm, *lblTemp, *lblData, *lblVoltTit, *lblVolt, *lblComb, *lblHora;
 static lv_obj_t *popup, *popupMsg, *popupIcon;
+static lv_obj_t *barRpm = NULL, *barVel = NULL;   // para estilos com barra
+uint8_t cockpit_estilo = 0;   // 0=Classico 1=Minimalista 2=Barras 3=Cockpit
+uint8_t tema_sel = 0;         // selecao na pagina de Temas
 static bool popup_shown = false;
 static bool pagina_montada_nova = false;
 static lv_obj_t *gManut, *manutSel, *manutNome[NUM_ITENS_MANUT], *manutPct[NUM_ITENS_MANUT];
@@ -2779,6 +2782,7 @@ static lv_obj_t *gDiag, *diagTit, *diagSel, *diagM[3], *diagMsg, *diagLista, *di
 static lv_obj_t *gAjuste, *ajTit, *ajCampo[6], *ajSalvar;
 static lv_obj_t *gSistema, *sisTit, *sisDist, *sisTempo;
 static lv_obj_t *sisConfirm, *sisConfirmSim, *sisConfirmNao;
+static lv_obj_t *gTemas, *temasOpt[4], *temasSel;
 
 // resetCache: no-op no LVGL (a tela se redesenha sozinha); mantido p/ taskBotoes
 void resetCache() {}
@@ -2796,7 +2800,31 @@ void autoteste() {
 }
 
 // ---------- Monta o cockpit (estilo HUD) ----------
-void montarCockpit() {
+// Popup de alerta (compartilhado por todos os estilos de painel)
+static void criarPopup(lv_obj_t* scr) {
+  popup = lv_obj_create(scr);
+  lv_obj_set_size(popup, 292, 92);
+  lv_obj_center(popup);
+  lv_obj_set_style_bg_color(popup, lv_color_hex(0x1A0707), 0);
+  lv_obj_set_style_border_color(popup, lv_color_hex(0xFF1744), 0);
+  lv_obj_set_style_border_width(popup, 3, 0);
+  lv_obj_set_style_radius(popup, 10, 0);
+  lv_obj_clear_flag(popup, LV_OBJ_FLAG_SCROLLABLE);
+  popupIcon = lv_label_create(popup);
+  lv_label_set_text(popupIcon, LV_SYMBOL_WARNING);
+  lv_obj_set_style_text_font(popupIcon, &lv_font_montserrat_40, 0);
+  lv_obj_set_style_text_color(popupIcon, lv_color_hex(0xFF1744), 0);
+  lv_obj_align(popupIcon, LV_ALIGN_LEFT_MID, 4, 0);
+  popupMsg = lv_label_create(popup);
+  lv_label_set_text(popupMsg, "ALERTA");
+  lv_obj_set_style_text_font(popupMsg, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(popupMsg, lv_color_hex(0xFF5252), 0);
+  lv_obj_align(popupMsg, LV_ALIGN_RIGHT_MID, -6, 0);
+  lv_obj_add_flag(popup, LV_OBJ_FLAG_HIDDEN);
+}
+
+// ============ Estilo 0: CLASSICO (medidor circular + dados) ============
+void montarCockpit0() {
   lv_obj_t* scr = lv_scr_act();
   lv_obj_set_style_bg_color(scr, lv_color_hex(0x05070D), 0);
 
@@ -2904,25 +2932,138 @@ void montarCockpit() {
   lv_obj_set_style_text_color(lblHora, lv_color_hex(0xB0BEC5), 0);
   lv_obj_align(lblHora, LV_ALIGN_BOTTOM_RIGHT, -8, -6);
 
-  popup = lv_obj_create(scr);
-  lv_obj_set_size(popup, 292, 92);
-  lv_obj_center(popup);
-  lv_obj_set_style_bg_color(popup, lv_color_hex(0x1A0707), 0);
-  lv_obj_set_style_border_color(popup, lv_color_hex(0xFF1744), 0);
-  lv_obj_set_style_border_width(popup, 3, 0);
-  lv_obj_set_style_radius(popup, 10, 0);
-  lv_obj_clear_flag(popup, LV_OBJ_FLAG_SCROLLABLE);
-  popupIcon = lv_label_create(popup);
-  lv_label_set_text(popupIcon, LV_SYMBOL_WARNING);
-  lv_obj_set_style_text_font(popupIcon, &lv_font_montserrat_40, 0);
-  lv_obj_set_style_text_color(popupIcon, lv_color_hex(0xFF1744), 0);
-  lv_obj_align(popupIcon, LV_ALIGN_LEFT_MID, 4, 0);
-  popupMsg = lv_label_create(popup);
-  lv_label_set_text(popupMsg, "ALERTA");
-  lv_obj_set_style_text_font(popupMsg, &lv_font_montserrat_28, 0);
-  lv_obj_set_style_text_color(popupMsg, lv_color_hex(0xFF5252), 0);
-  lv_obj_align(popupMsg, LV_ALIGN_RIGHT_MID, -6, 0);
-  lv_obj_add_flag(popup, LV_OBJ_FLAG_HIDDEN);
+  criarPopup(scr);
+}
+
+// helper: rotulo pequeno em (x,y) ancorado, devolve o label
+static lv_obj_t* rotulo(lv_obj_t* par, const char* txt, const lv_font_t* f, uint32_t cor,
+                        lv_align_t al, int x, int y) {
+  lv_obj_t* l = lv_label_create(par);
+  lv_label_set_text(l, txt);
+  lv_obj_set_style_text_font(l, f, 0);
+  lv_obj_set_style_text_color(l, lv_color_hex(cor), 0);
+  lv_obj_align(l, al, x, y);
+  return l;
+}
+
+// ============ Estilo 1: MINIMALISTA (velocidade gigante + barra RPM) ============
+void montarCockpit1() {
+  lv_obj_t* scr = lv_scr_act();
+  lv_obj_set_style_bg_color(scr, lv_color_hex(0x05070D), 0);
+  gCockpit = lv_obj_create(scr);
+  lv_obj_set_size(gCockpit, LV_W, LV_H);
+  lv_obj_center(gCockpit);
+  lv_obj_set_style_bg_opa(gCockpit, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(gCockpit, 0, 0);
+  lv_obj_clear_flag(gCockpit, LV_OBJ_FLAG_SCROLLABLE);
+
+  lblVel = lv_label_create(gCockpit);
+  lv_label_set_text(lblVel, "0");
+  lv_obj_set_style_text_font(lblVel, &lv_font_montserrat_48, 0);
+  lv_obj_set_style_transform_zoom(lblVel, 512, 0);   // ~2x (fonte 48 -> ~96px)
+  lv_obj_set_style_text_color(lblVel, lv_color_white(), 0);
+  lv_obj_align(lblVel, LV_ALIGN_CENTER, 0, -34);
+  rotulo(gCockpit, "km/h", &lv_font_montserrat_14, 0x90A4AE, LV_ALIGN_CENTER, 0, 22);
+
+  // barra de RPM
+  barRpm = lv_bar_create(gCockpit);
+  lv_obj_set_size(barRpm, 260, 10);
+  lv_obj_align(barRpm, LV_ALIGN_CENTER, 0, 58);
+  lv_bar_set_range(barRpm, 0, 8000);
+  lv_obj_set_style_bg_color(barRpm, lv_color_hex(0x16202F), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(barRpm, lv_color_hex(0x00E5FF), LV_PART_INDICATOR);
+  lv_obj_set_style_radius(barRpm, 5, LV_PART_INDICATOR);
+  lblRpm = rotulo(gCockpit, "0", &lv_font_montserrat_14, 0x00E5FF, LV_ALIGN_CENTER, 0, 74);
+
+  // 3 infos discretas embaixo
+  lblTemp = rotulo(gCockpit, "-- C", &lv_font_montserrat_28, 0x4CAF50, LV_ALIGN_BOTTOM_LEFT, 14, -10);
+  lblComb = rotulo(gCockpit, "--%", &lv_font_montserrat_28, 0xFFC107, LV_ALIGN_BOTTOM_MID, 0, -10);
+  lblVolt = rotulo(gCockpit, "--V", &lv_font_montserrat_28, 0x4CAF50, LV_ALIGN_BOTTOM_RIGHT, -14, -10);
+  criarPopup(scr);
+}
+
+// ============ Estilo 2: BARRAS (RPM/vel/temp/comb em barras horizontais) ============
+static lv_obj_t* linhaBarra(lv_obj_t* par, int y, const char* nome, uint32_t cor,
+                            lv_obj_t** outVal, lv_obj_t** outBar, int range) {
+  rotulo(par, nome, &lv_font_montserrat_14, 0x78909C, LV_ALIGN_TOP_LEFT, 12, y);
+  *outVal = rotulo(par, "0", &lv_font_montserrat_28, cor, LV_ALIGN_TOP_RIGHT, -12, y - 6);
+  lv_obj_t* bar = lv_bar_create(par);
+  lv_obj_set_size(bar, 296, 12);
+  lv_obj_align(bar, LV_ALIGN_TOP_MID, 0, y + 26);
+  lv_bar_set_range(bar, 0, range);
+  lv_obj_set_style_bg_color(bar, lv_color_hex(0x16202F), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(bar, lv_color_hex(cor), LV_PART_INDICATOR);
+  lv_obj_set_style_radius(bar, 6, LV_PART_INDICATOR);
+  if (outBar) *outBar = bar;
+  return bar;
+}
+void montarCockpit2() {
+  lv_obj_t* scr = lv_scr_act();
+  lv_obj_set_style_bg_color(scr, lv_color_hex(0x05070D), 0);
+  gCockpit = lv_obj_create(scr);
+  lv_obj_set_size(gCockpit, LV_W, LV_H);
+  lv_obj_center(gCockpit);
+  lv_obj_set_style_bg_opa(gCockpit, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(gCockpit, 0, 0);
+  lv_obj_clear_flag(gCockpit, LV_OBJ_FLAG_SCROLLABLE);
+
+  linhaBarra(gCockpit, 8,  "RPM",         0x00E5FF, &lblRpm,  &barRpm, 8000);
+  linhaBarra(gCockpit, 66, "VELOCIDADE",  0x00B0FF, &lblVel,  &barVel, 240);
+  linhaBarra(gCockpit, 124,"TEMPERATURA", 0x4CAF50, &lblTemp, NULL,    150);
+  linhaBarra(gCockpit, 182,"COMBUSTIVEL", 0xFFC107, &lblComb, NULL,    100);
+  // tensao no cabecalho (canto)
+  lblVolt = rotulo(gCockpit, "--V", &lv_font_montserrat_14, 0x90A4AE, LV_ALIGN_BOTTOM_RIGHT, -12, -2);
+  criarPopup(scr);
+}
+
+// ============ Estilo 3: COCKPIT (mosaico de tiles) ============
+static void tile(lv_obj_t* par, int x, int y, int w, int h, const char* nome, uint32_t cor,
+                 lv_obj_t** outVal) {
+  lv_obj_t* c = lv_obj_create(par);
+  lv_obj_set_size(c, w, h);
+  lv_obj_set_pos(c, x, y);
+  lv_obj_set_style_bg_color(c, lv_color_hex(0x0A0F18), 0);
+  lv_obj_set_style_border_color(c, lv_color_hex(cor), 0);
+  lv_obj_set_style_border_width(c, 2, 0);
+  lv_obj_set_style_radius(c, 10, 0);
+  lv_obj_set_style_pad_all(c, 6, 0);
+  lv_obj_clear_flag(c, LV_OBJ_FLAG_SCROLLABLE);
+  rotulo(c, nome, &lv_font_montserrat_14, cor, LV_ALIGN_TOP_LEFT, 2, 0);
+  *outVal = rotulo(c, "--", &lv_font_montserrat_28, 0xFFFFFF, LV_ALIGN_BOTTOM_LEFT, 2, -2);
+}
+void montarCockpit3() {
+  lv_obj_t* scr = lv_scr_act();
+  lv_obj_set_style_bg_color(scr, lv_color_hex(0x05070D), 0);
+  gCockpit = lv_obj_create(scr);
+  lv_obj_set_size(gCockpit, LV_W, LV_H);
+  lv_obj_center(gCockpit);
+  lv_obj_set_style_bg_opa(gCockpit, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(gCockpit, 0, 0);
+  lv_obj_set_style_pad_all(gCockpit, 0, 0);
+  lv_obj_clear_flag(gCockpit, LV_OBJ_FLAG_SCROLLABLE);
+
+  const int W = 152, H = 74, gap = 8, x0 = 6, y0 = 6;
+  tile(gCockpit, x0,            y0,            W, H, "VELOC (km/h)", 0x00E5FF, &lblVel);
+  tile(gCockpit, x0 + W + gap,  y0,            W, H, "RPM",          0x00B0FF, &lblRpm);
+  tile(gCockpit, x0,            y0 + H + gap,  W, H, "TEMP (C)",     0x4CAF50, &lblTemp);
+  tile(gCockpit, x0 + W + gap,  y0 + H + gap,  W, H, "COMB (%)",     0xFFC107, &lblComb);
+  tile(gCockpit, x0,            y0 + 2*(H+gap),W, H, "BATERIA (V)",  0x00E676, &lblVolt);
+  tile(gCockpit, x0 + W + gap,  y0 + 2*(H+gap),W, H, "HORA",         0x7C4DFF, &lblHora);
+  criarPopup(scr);
+}
+
+// ---------- Dispatcher: monta o painel do estilo escolhido ----------
+void montarCockpit() {
+  // zera todos os handles (cada estilo cria so os que usa; atualizarCockpit checa NULL)
+  meter = NULL; indArco = NULL; barRpm = NULL; barVel = NULL;
+  lblVel = lblRpm = lblTemp = lblData = lblVoltTit = lblVolt = lblComb = lblHora = NULL;
+  popup = NULL; popupMsg = NULL; popupIcon = NULL;
+  switch (cockpit_estilo) {
+    case 1: montarCockpit1(); break;
+    case 2: montarCockpit2(); break;
+    case 3: montarCockpit3(); break;
+    default: montarCockpit0();
+  }
 }
 
 // ---------- Atualiza o cockpit com dados REAIS ----------
@@ -2941,15 +3082,24 @@ void atualizarCockpit(DadosCarro &d) {
   int vel = d.velocidade > 0 ? d.velocidade : 0;
   bool ligado = (rpm > 0);
 
+  // Atualizacao GENERICA (funciona em qualquer estilo -> checa NULL em cada widget).
   char b[24];
-  snprintf(b, sizeof(b), "%d", vel);  lv_label_set_text(lblVel, b);
-  snprintf(b, sizeof(b), "%d", rpm);  lv_label_set_text(lblRpm, b);
+  if (lblVel) { snprintf(b, sizeof(b), "%d", vel);  lv_label_set_text(lblVel, b); }
+  if (lblRpm) { snprintf(b, sizeof(b), "%d", rpm);  lv_label_set_text(lblRpm, b); }
 
   int arc = rpm / 1000;
-  if (arc != last_arc) { lv_meter_set_indicator_end_value(meter, indArco, arc); last_arc = arc; }
+  if (arc != last_arc) {
+    if (meter && indArco) lv_meter_set_indicator_end_value(meter, indArco, arc);
+    last_arc = arc;
+  }
+  if (barRpm) lv_bar_set_value(barRpm, rpm, LV_ANIM_OFF);
+  if (barVel) lv_bar_set_value(barVel, vel, LV_ANIM_OFF);
 
-  if (d.temp_motor > -40) {
-    snprintf(b, sizeof(b), "TEMP %dC", d.temp_motor); lv_label_set_text(lblTemp, b);
+  if (d.temp_motor > -40 && lblTemp) {
+    // no estilo Barras/Cockpit o rotulo ja diz "TEMP"; mostra so o numero. No classico, "TEMP xxC".
+    if (cockpit_estilo == 0) snprintf(b, sizeof(b), "TEMP %dC", d.temp_motor);
+    else                     snprintf(b, sizeof(b), "%d", d.temp_motor);
+    lv_label_set_text(lblTemp, b);
     int band = d.temp_motor > 100 ? 1 : 0;
     if (band != last_band) {
       lv_obj_set_style_text_color(lblTemp, band ? lv_color_hex(0xFF9800) : lv_color_hex(0x4CAF50), 0);
@@ -2957,17 +3107,20 @@ void atualizarCockpit(DadosCarro &d) {
     }
   }
 
-  lv_label_set_text(lblVoltTit, ligado ? (LV_SYMBOL_CHARGE " ALTERN.") : (LV_SYMBOL_BATTERY_FULL " BAT."));
-  if (d.tensao > 0) { snprintf(b, sizeof(b), "%.1fV", d.tensao); lv_label_set_text(lblVolt, b); }
+  if (lblVoltTit)
+    lv_label_set_text(lblVoltTit, ligado ? (LV_SYMBOL_CHARGE " ALTERN.") : (LV_SYMBOL_BATTERY_FULL " BAT."));
+  if (lblVolt && d.tensao > 0) { snprintf(b, sizeof(b), "%.1fV", d.tensao); lv_label_set_text(lblVolt, b); }
 
-  if (d.combust >= 0) { snprintf(b, sizeof(b), "%d%%", d.combust); lv_label_set_text(lblComb, b); }
-  else lv_label_set_text(lblComb, "--");
+  if (lblComb) {
+    if (d.combust >= 0) { snprintf(b, sizeof(b), (cockpit_estilo == 0) ? "%d%%" : "%d", d.combust); lv_label_set_text(lblComb, b); }
+    else lv_label_set_text(lblComb, "--");
+  }
 
   t++;
   if (t % 60 == 0) {
     DateTime now = rtcNow();
-    snprintf(b, sizeof(b), "%02d:%02d", now.hour(), now.minute()); lv_label_set_text(lblHora, b);
-    snprintf(b, sizeof(b), "%02d/%02d/%04d", now.day(), now.month(), now.year()); lv_label_set_text(lblData, b);
+    if (lblHora) { snprintf(b, sizeof(b), "%02d:%02d", now.hour(), now.minute()); lv_label_set_text(lblHora, b); }
+    if (lblData) { snprintf(b, sizeof(b), "%02d/%02d/%04d", now.day(), now.month(), now.year()); lv_label_set_text(lblData, b); }
 
     alertCnt = 0;
     uint32_t km = (km_total_x100 + km_acumulado_x100) / 100;
@@ -3595,6 +3748,74 @@ void montarPlaceholder(const char* txt) {
   lv_obj_center(l);
 }
 
+// ============================================================
+//  Pagina TEMAS: usuario escolhe o estilo do painel (0-3)
+// ============================================================
+static const char* TEMAS_NOME[4] = {"Classico", "Minimalista", "Barras", "Cockpit"};
+static const char* TEMAS_DESC[4] = {
+  "Medidor circular + dados", "Velocidade gigante", "Barras horizontais", "Mosaico de tiles"
+};
+
+void montarTemas() {
+  lv_obj_t* scr = lv_scr_act();
+  gTemas = lv_obj_create(scr);
+  lv_obj_set_size(gTemas, LV_W, LV_H);
+  lv_obj_center(gTemas);
+  lv_obj_set_style_bg_color(gTemas, lv_color_hex(0x05070D), 0);
+  lv_obj_set_style_border_width(gTemas, 0, 0);
+  lv_obj_set_style_pad_all(gTemas, 0, 0);
+  lv_obj_clear_flag(gTemas, LV_OBJ_FLAG_SCROLLABLE);
+
+  rotulo(gTemas, "TEMA DO PAINEL", &lv_font_montserrat_14, 0x4DD0E1, LV_ALIGN_TOP_MID, 0, 6);
+
+  // caixa de selecao (fica atras da opcao escolhida)
+  temasSel = lv_obj_create(gTemas);
+  lv_obj_set_size(temasSel, 300, 44);
+  lv_obj_set_style_bg_color(temasSel, lv_color_hex(0x16263A), 0);
+  lv_obj_set_style_border_color(temasSel, lv_color_hex(0x00E5FF), 0);
+  lv_obj_set_style_border_width(temasSel, 2, 0);
+  lv_obj_set_style_radius(temasSel, 6, 0);
+  lv_obj_clear_flag(temasSel, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_pos(temasSel, 10, 30);
+
+  tema_sel = cockpit_estilo;
+  for (int i = 0; i < 4; i++) {
+    lv_obj_t* nome = lv_label_create(gTemas);
+    char buf[40];
+    snprintf(buf, sizeof(buf), "%s%s", TEMAS_NOME[i], (i == cockpit_estilo) ? "  " LV_SYMBOL_OK : "");
+    lv_label_set_text(nome, buf);
+    lv_obj_set_style_text_font(nome, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(nome, lv_color_white(), 0);
+    lv_obj_set_pos(nome, 22, 32 + i * 44);
+    temasOpt[i] = nome;
+    lv_obj_t* desc = lv_label_create(gTemas);
+    lv_label_set_text(desc, TEMAS_DESC[i]);
+    lv_obj_set_style_text_font(desc, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(desc, lv_color_hex(0x78909C), 0);
+    lv_obj_set_pos(desc, 24, 58 + i * 44);
+  }
+  rotulo(gTemas, LV_SYMBOL_UP LV_SYMBOL_DOWN " escolhe   " LV_SYMBOL_OK " aplica",
+         &lv_font_montserrat_14, 0x607D8B, LV_ALIGN_BOTTOM_MID, 0, -6);
+}
+
+void atualizarTemas() {
+  static int last_sel = -1, last_ativo = -1;
+  if (pagina_montada_nova) { last_sel = -1; last_ativo = -1; pagina_montada_nova = false; }
+  if (tema_sel > 3) tema_sel = 0;
+  if (tema_sel != last_sel) {
+    lv_obj_set_pos(temasSel, 10, 28 + tema_sel * 44);
+    last_sel = tema_sel;
+  }
+  if (cockpit_estilo != last_ativo) {   // atualiza o check do que esta ativo
+    for (int i = 0; i < 4; i++) {
+      char buf[40];
+      snprintf(buf, sizeof(buf), "%s%s", TEMAS_NOME[i], (i == cockpit_estilo) ? "  " LV_SYMBOL_OK : "");
+      lv_label_set_text(temasOpt[i], buf);
+    }
+    last_ativo = cockpit_estilo;
+  }
+}
+
 // ---------- Monta SO a pagina ativa (economiza RAM do LVGL) ----------
 void construirPagina(uint8_t pag) {
   lv_obj_clean(lv_scr_act());
@@ -3603,7 +3824,8 @@ void construirPagina(uint8_t pag) {
   else if (pag == 1) montarDiag();
   else if (pag == 2) montarSistema();
   else if (pag == 3) montarManut();
-  else               montarAjuste();   // pag == 4
+  else if (pag == 4) montarAjuste();
+  else               montarTemas();   // pag == 5
   pagina_montada_nova = true;
 }
 
@@ -3658,6 +3880,7 @@ void taskTela(void* param) {
     else if (pagina_atual == 2) atualizarSistema();
     else if (pagina_atual == 3) atualizarManut();
     else if (pagina_atual == 4) atualizarAjuste();
+    else if (pagina_atual == 5) atualizarTemas();
 
     lv_timer_handler();
     vTaskDelay(pdMS_TO_TICKS(15));
@@ -3693,6 +3916,19 @@ void speedCarregar() {
   }
   speedPrefs.end();
   Serial.printf("[SPEED] historico carregado: %d dias\n", speedHistN);
+}
+
+// estilo do painel (0-3) na NVS
+void cockpitEstiloCarregar() {
+  speedPrefs.begin("veican", true);
+  cockpit_estilo = speedPrefs.getUChar("dash", 0);
+  speedPrefs.end();
+  if (cockpit_estilo > 3) cockpit_estilo = 0;
+}
+void cockpitEstiloSalvar() {
+  speedPrefs.begin("veican", false);
+  speedPrefs.putUChar("dash", cockpit_estilo);
+  speedPrefs.end();
 }
 
 void speedFlush() {
@@ -3980,6 +4216,7 @@ void setup() {
   xTaskCreatePinnedToCore(taskBotoes,    "Botoes", 4096, NULL, 2, NULL, 1);
 
   speedCarregar();   // historico de velocidade (NVS)
+  cockpitEstiloCarregar();   // estilo do painel escolhido
 
   Serial.printf("[HEAP] antes do BLE = %u bytes\n", ESP.getFreeHeap());
   initBLE();
@@ -4093,6 +4330,8 @@ static void botaoOK() {
       nav_modo = NAV_MODO_EDICAO;
     } else if (pagina_atual == 2) {
       pagina_atual = (pagina_atual + 1) % TOTAL_PAGINAS;
+    } else if (pagina_atual == 5) {
+      nav_modo = NAV_MODO_EDICAO;   // Temas: entra p/ escolher o estilo
     }
   } else {
     if (pagina_atual == 1) {
@@ -4110,6 +4349,10 @@ static void botaoOK() {
         case DIAG_ESTADO_APAGADO_OK: diag_estado = DIAG_ESTADO_MENU; break;
       }
     } else if (pagina_atual == 3) {
+      nav_modo = NAV_MODO_VISUALIZACAO;
+    } else if (pagina_atual == 5) {
+      cockpit_estilo = tema_sel;   // Temas: aplica e salva o estilo escolhido
+      cockpitEstiloSalvar();
       nav_modo = NAV_MODO_VISUALIZACAO;
     }
   }
@@ -4210,6 +4453,8 @@ void taskBotoes(void* param) {
             } else if (diag_estado == DIAG_ESTADO_CONFIRMAR) {
               diag_confirma_selecionado = (diag_confirma_selecionado == 0) ? 1 : 0;
             }
+          } else if (pagina_atual == 5) {
+            if (tema_sel == 0) tema_sel = 3; else tema_sel--;
           }
         } else {
           if (pagina_atual == 0) pagina_atual = TOTAL_PAGINAS - 1;
@@ -4245,6 +4490,8 @@ void taskBotoes(void* param) {
             } else if (diag_estado == DIAG_ESTADO_CONFIRMAR) {
               diag_confirma_selecionado = (diag_confirma_selecionado == 0) ? 1 : 0;
             }
+          } else if (pagina_atual == 5) {
+            tema_sel = (tema_sel + 1) % 4;
           }
         } else {
           pagina_atual = (pagina_atual + 1) % TOTAL_PAGINAS;
