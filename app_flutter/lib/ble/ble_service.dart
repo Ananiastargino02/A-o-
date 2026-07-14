@@ -71,10 +71,19 @@ class BleService extends ChangeNotifier {
       BluetoothDevice? achado;
       final sub = FlutterBluePlus.scanResults.listen((results) {
         for (final r in results) {
-          final nome = r.advertisementData.advName.isNotEmpty
-              ? r.advertisementData.advName
-              : r.device.platformName;
-          if (nome == VUuids.deviceName) {
+          final advName = r.advertisementData.advName.trim();
+          final platformName = r.device.platformName.trim();
+          final nome = advName.isNotEmpty ? advName : platformName;
+
+          debugPrint(
+            'BLE encontrado: advName="$advName", '
+            'platformName="$platformName", '
+            'id=${r.device.remoteId}',
+          );
+
+          // casa por "contem" (ignora maiuscula/minuscula) -> robusto a espacos
+          // e a variacoes de nome anunciado entre aparelhos.
+          if (nome.toUpperCase().contains(VUuids.deviceName.toUpperCase())) {
             achado = r.device;
           }
         }
