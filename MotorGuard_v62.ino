@@ -256,6 +256,7 @@ volatile int      probe_pid_pedido = -1;   // comando "PID xx": sonda 1 PID e lo
 volatile bool     probe_temp_scan  = false; // comando "TEMPSCAN": testa PIDs de temperatura
 volatile bool     probe_candump    = false; // comando "CANDUMP": lista todos os frames do barramento
 volatile bool     probe_fuelwatch  = false; // comando "FUELWATCH": mostra candidatos de combustivel ao vivo
+volatile bool     probe_klraw      = false; // comando "KLRAW": bytes crus da temperatura via K-line
 volatile uint16_t probe_did_ini    = 0;
 volatile uint16_t probe_did_fim    = 0;
 volatile uint32_t probe_reqid      = 0x7E0;
@@ -2350,6 +2351,23 @@ void taskCAN(void* param) {
         } else {
           // ---- ISO 9141 / KWP com mode01 (Gol etc.): 1 PID por ciclo ----
           static uint8_t kpid = 0;
+
+          // KLRAW: dump cru dos bytes de temperatura (diagnostico). Roda aqui pois
+          // e o unico lugar com acesso seguro a UART K-line.
+          if (probe_klraw) {
+            probe_klraw = false;
+            uint8_t dbg[8];
+            const uint8_t plist[] = {0x05, 0x5C, 0x0F, 0x0C};
+            const char* pnome[]  = {"05 agua", "5C oleo", "0F ar-adm", "0C rpm(ref)"};
+            Serial.println("\n===== KLRAW (bytes crus - K-line) =====");
+            for (int i = 0; i < 4; i++) {
+              Serial.printf("[KLRAW] PID %s:\n", pnome[i]);
+              klinePID(plist[i], kline_fmt, kline_tgt, dbg, 8, true);  // log=true -> imprime req + resp cru
+              vTaskDelay(pdMS_TO_TICKS(80));
+            }
+            Serial.println("Byte da agua = 1o valor logo DEPOIS de '41 05'. Me manda essas linhas.");
+            Serial.println("====\n");
+          }
           // SO PIDs essenciais e suportados. 0x2F (combustivel) FORA da leitura continua:
           // pedir PID nao suportado estava envenenando a sessao ISO 9141 (leituras seguintes falhavam).
           pid = (kpid == 0) ? 0x0C : (kpid == 1) ? 0x05 : 0x0D;
@@ -4635,6 +4653,7 @@ void taskSerial(void* param) {
         else if (buf == "FUEL") { probe_pedir_fuel = true; Serial.println(">>> lendo 0x2F..."); }
         else if (buf == "SPEEDHIST") Serial.print(speedHistString());
         else if (buf == "TEMPSCAN") { probe_temp_scan = true; Serial.println(">>> procurando o PID de temperatura..."); }
+        else if (buf == "KLRAW") { probe_klraw = true; Serial.println(">>> dump cru da temperatura K-line..."); }
         else if (buf == "CANDUMP") { probe_candump = true; Serial.println(">>> capturando frames do barramento..."); }
         else if (buf == "FUELWATCH") { probe_fuelwatch = true; Serial.println(">>> observando candidatos de combustivel..."); }
         else if (buf.startsWith("HYFUEL ")) {   // ajusta o combustivel broadcast Hyundai: HYFUEL <id_hex> <byte> <max>
