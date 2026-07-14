@@ -1416,12 +1416,23 @@ int lerDTCs(char dtcs[][6]) {
     if (twai_receive(&rx, pdMS_TO_TICKS(100)) != ESP_OK) continue;
     if (!ehRespostaOBD(rx)) continue;
     rx_ok++;
+    Serial.printf("[DTC] rx %03lX:", (unsigned long)rx.identifier);
+    for (int j = 0; j < 8; j++) Serial.printf(" %02X", rx.data[j]);
+    Serial.println();
     uint8_t pci = rx.data[0] & 0xF0;
     if (pci == 0x00) {
       if (rx.data[1] != 0x43) continue;
-      uint8_t qtd = rx.data[2];
-      for (int i = 0; i < qtd && i < 2 && num_dtcs < MAX_DTCS; i++) {
-        uint8_t b1 = rx.data[3 + i*2]; uint8_t b2 = rx.data[4 + i*2];
+      // A resposta pode vir COM ou SEM byte de contagem apos o 0x43:
+      //   com:  43 <n> <hi lo> <hi lo> ...   (after = 1 + 2n -> impar)
+      //   sem:  43 <hi lo> <hi lo> ...       (after = 2n     -> par)
+      // Decide pelo tamanho declarado no PCI (nibble baixo do byte 0).
+      int after = (int)(rx.data[0] & 0x0F) - 1;   // bytes de dados apos o 0x43
+      if (after < 2) after = 6;                    // PCI nao confiavel: assume quadro cheio
+      int start, count;
+      if ((after % 2) == 1 && rx.data[2] == (after - 1) / 2) { count = rx.data[2]; start = 3; }
+      else                                                   { count = after / 2;  start = 2; }
+      for (int i = 0; i < count && num_dtcs < MAX_DTCS && (start + i*2 + 1) < 8; i++) {
+        uint8_t b1 = rx.data[start + i*2]; uint8_t b2 = rx.data[start + 1 + i*2];
         if (b1 == 0 && b2 == 0) continue;
         decodificaDTC(b1, b2, dtcs[num_dtcs]); num_dtcs++;
       }
@@ -1453,6 +1464,7 @@ int lerDTCs(char dtcs[][6]) {
       return num_dtcs;
     }
   }
+  Serial.println("[DTC] (CAN) sem resposta ao mode03 (ou ECU nao expoe DTC generico)");
   return -1;
 }
 
@@ -2174,25 +2186,35 @@ void klineDTCClear() {
 // Roda INLINE na taskCAN (twai ja off no modo K-line); NAO suspende tarefas.
 int klineLerDTCs(char dtcs[][6]) {
   if (!kline_ok) return -1;
-  uint8_t req[8]; int rn = 0;
-  req[rn++] = 0xC0 | 4; req[rn++] = 0x33; req[rn++] = 0xF1; req[rn++] = 0x18; req[rn++] = 0x00; req[rn++] = 0xFF; req[rn++] = 0x00;
-  req[rn] = klineCS(req, rn); rn++;
-  klineSend(req, rn);
-  uint8_t r[80]; int n = 0; uint32_t t0 = millis();
-  while (n < (int)sizeof(r) && millis() - t0 < 500) { int b = klineRead(100); if (b < 0) break; r[n++] = b; }
-  for (int i = 0; i + 1 < n; i++) {
-    if (r[i] == 0x58) {                       // resposta positiva ao 0x18
-      int qtd = r[i + 1], num = 0, p = i + 2;
-      for (int k = 0; k < qtd && num < MAX_DTCS && p + 1 < n; k++, p += 3) {  // pares: hi lo status
-        uint8_t b1 = r[p], b2 = r[p + 1];
-        if (b1 == 0 && b2 == 0) continue;
-        decodificaDTC(b1, b2, dtcs[num]); num++;
-      }
-      return num;
+  uint8_t d[48]; int nd = 0, num = 0;
+
+  // 1) OBD mode 03 (padrao) — usa o FORMATO/ALVO detectado (ISO9141 ou KWP).
+  //    Serve p/ VW/Gol, Honda-via-Kline e a maioria. Resposta positiva = 0x43.
+  uint8_t m03[1] = {0x03};
+  int res = klineServico("mode03", m03, 1, kline_fmt, kline_tgt, d, sizeof(d), &nd);
+  if (res == 1) {
+    for (int i = 0; i + 1 < nd && num < MAX_DTCS; i += 2) {
+      if (d[i] == 0 && d[i + 1] == 0) continue;
+      decodificaDTC(d[i], d[i + 1], dtcs[num]); num++;
     }
-    if (r[i] == 0x7F) return 0;               // negativo = sem codigos/servico
+    if (num > 0) return num;
   }
-  return -1;
+
+  // 2) KWP 0x18 00 FF00 (readDTCByStatus) — GM/Montana e alguns KWP2000.
+  //    Resposta positiva = 0x58, formato: <contagem> <hi lo status>...
+  uint8_t r18[4] = {0x18, 0x00, 0xFF, 0x00};
+  res = klineServico("18 00 FF00", r18, 4, kline_fmt, kline_tgt, d, sizeof(d), &nd);
+  if (res == 1 && nd >= 1) {
+    int qtd = d[0];
+    for (int i = 1; i + 1 < nd && (i - 1) / 3 < qtd && num < MAX_DTCS; i += 3) {
+      if (d[i] == 0 && d[i + 1] == 0) continue;
+      decodificaDTC(d[i], d[i + 1], dtcs[num]); num++;
+    }
+    return num;
+  }
+
+  if (res == 0) return 0;   // ECU respondeu negativo = sem codigos
+  return -1;                // sem resposta
 }
 
 // Apaga DTCs via K-line KWP 0x14 FF00 (Montana/GM). Roda inline. true = apagou.
