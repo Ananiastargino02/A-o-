@@ -2771,7 +2771,10 @@ static lv_obj_t *meter; static lv_meter_indicator_t *indArco;
 static lv_obj_t *lblVel, *lblRpm, *lblTemp, *lblData, *lblVoltTit, *lblVolt, *lblComb, *lblHora;
 static lv_obj_t *popup, *popupMsg, *popupIcon;
 static lv_obj_t *barRpm = NULL, *barVel = NULL;   // para estilos com barra
-uint8_t cockpit_estilo = 0;   // 0=Classico 1=Minimalista 2=Barras 3=Cockpit
+static lv_obj_t *batBody = NULL, *batFill = NULL, *batTxt = NULL;   // bateria estilo iPhone
+static int batInnerW = 0;      // largura util interna do preenchimento da bateria
+static int meterMax = 10;      // teto do arco do conta-giro (em milhares) por estilo
+uint8_t cockpit_estilo = 0;   // 0=Classico 1=Ferrari 2=Lamborghini 3=Tesla
 uint8_t tema_sel = 0;         // selecao na pagina de Temas
 static bool popup_shown = false;
 static bool pagina_montada_nova = false;
@@ -2821,6 +2824,44 @@ static void criarPopup(lv_obj_t* scr) {
   lv_obj_set_style_text_color(popupMsg, lv_color_hex(0xFF5252), 0);
   lv_obj_align(popupMsg, LV_ALIGN_RIGHT_MID, -6, 0);
   lv_obj_add_flag(popup, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Bateria estilo iPhone: corpo arredondado + terminal + preenchimento colorido.
+// 11.0V = vazio, 12.6V = cheio. Guarda os handles em globais p/ atualizarBateria().
+static void criarBateriaIphone(lv_obj_t* par, lv_align_t al, int x, int y, int w, int h, bool comTexto) {
+  batBody = lv_obj_create(par);
+  lv_obj_set_size(batBody, w, h);
+  lv_obj_align(batBody, al, x, y);
+  lv_obj_set_style_bg_opa(batBody, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_color(batBody, lv_color_hex(0xCFD8DC), 0);
+  lv_obj_set_style_border_width(batBody, 2, 0);
+  lv_obj_set_style_radius(batBody, 4, 0);
+  lv_obj_set_style_pad_all(batBody, 2, 0);
+  lv_obj_clear_flag(batBody, LV_OBJ_FLAG_SCROLLABLE);
+  // terminal (o "biquinho" da bateria) na direita
+  lv_obj_t* nub = lv_obj_create(par);
+  lv_obj_set_size(nub, 3, h / 2);
+  lv_obj_align_to(nub, batBody, LV_ALIGN_OUT_RIGHT_MID, 1, 0);
+  lv_obj_set_style_bg_color(nub, lv_color_hex(0xCFD8DC), 0);
+  lv_obj_set_style_border_width(nub, 0, 0);
+  lv_obj_set_style_radius(nub, 1, 0);
+  // preenchimento interno (largura muda com a tensao)
+  batInnerW = w - 8;
+  batFill = lv_obj_create(batBody);
+  lv_obj_set_size(batFill, 1, h - 8);
+  lv_obj_align(batFill, LV_ALIGN_LEFT_MID, 0, 0);
+  lv_obj_set_style_bg_color(batFill, lv_color_hex(0x34C759), 0);
+  lv_obj_set_style_border_width(batFill, 0, 0);
+  lv_obj_set_style_radius(batFill, 2, 0);
+  lv_obj_clear_flag(batFill, LV_OBJ_FLAG_SCROLLABLE);
+  batTxt = NULL;
+  if (comTexto) {
+    batTxt = lv_label_create(par);
+    lv_label_set_text(batTxt, "--V");
+    lv_obj_set_style_text_font(batTxt, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(batTxt, lv_color_hex(0xB0BEC5), 0);
+    lv_obj_align_to(batTxt, batBody, LV_ALIGN_OUT_BOTTOM_MID, 0, 3);
+  }
 }
 
 // ============ Estilo 0: CLASSICO (medidor circular + dados) ============
@@ -2932,6 +2973,9 @@ void montarCockpit0() {
   lv_obj_set_style_text_color(lblHora, lv_color_hex(0xB0BEC5), 0);
   lv_obj_align(lblHora, LV_ALIGN_BOTTOM_RIGHT, -8, -6);
 
+  // bateria estilo iPhone (a tensao ja aparece em texto acima; aqui so o icone)
+  criarBateriaIphone(gCockpit, LV_ALIGN_TOP_RIGHT, -8, 150, 50, 20, false);
+
   criarPopup(scr);
 }
 
@@ -2946,94 +2990,10 @@ static lv_obj_t* rotulo(lv_obj_t* par, const char* txt, const lv_font_t* f, uint
   return l;
 }
 
-// ============ Estilo 1: MINIMALISTA (velocidade gigante + barra RPM) ============
-void montarCockpit1() {
+// Base transparente do cockpit (fundo + container full-screen). Devolve o scr.
+static lv_obj_t* baseCockpit(uint32_t bgScr) {
   lv_obj_t* scr = lv_scr_act();
-  lv_obj_set_style_bg_color(scr, lv_color_hex(0x05070D), 0);
-  gCockpit = lv_obj_create(scr);
-  lv_obj_set_size(gCockpit, LV_W, LV_H);
-  lv_obj_center(gCockpit);
-  lv_obj_set_style_bg_opa(gCockpit, LV_OPA_TRANSP, 0);
-  lv_obj_set_style_border_width(gCockpit, 0, 0);
-  lv_obj_clear_flag(gCockpit, LV_OBJ_FLAG_SCROLLABLE);
-
-  lblVel = lv_label_create(gCockpit);
-  lv_label_set_text(lblVel, "0");
-  lv_obj_set_style_text_font(lblVel, &lv_font_montserrat_40, 0);   // 40 = a maior habilitada no lv_conf
-  lv_obj_set_style_transform_zoom(lblVel, 640, 0);   // ~2.5x (fonte 40 -> ~100px)
-  lv_obj_set_style_text_color(lblVel, lv_color_white(), 0);
-  lv_obj_align(lblVel, LV_ALIGN_CENTER, 0, -34);
-  rotulo(gCockpit, "km/h", &lv_font_montserrat_14, 0x90A4AE, LV_ALIGN_CENTER, 0, 22);
-
-  // barra de RPM
-  barRpm = lv_bar_create(gCockpit);
-  lv_obj_set_size(barRpm, 260, 10);
-  lv_obj_align(barRpm, LV_ALIGN_CENTER, 0, 58);
-  lv_bar_set_range(barRpm, 0, 8000);
-  lv_obj_set_style_bg_color(barRpm, lv_color_hex(0x16202F), LV_PART_MAIN);
-  lv_obj_set_style_bg_color(barRpm, lv_color_hex(0x00E5FF), LV_PART_INDICATOR);
-  lv_obj_set_style_radius(barRpm, 5, LV_PART_INDICATOR);
-  lblRpm = rotulo(gCockpit, "0", &lv_font_montserrat_14, 0x00E5FF, LV_ALIGN_CENTER, 0, 74);
-
-  // 3 infos discretas embaixo
-  lblTemp = rotulo(gCockpit, "-- C", &lv_font_montserrat_28, 0x4CAF50, LV_ALIGN_BOTTOM_LEFT, 14, -10);
-  lblComb = rotulo(gCockpit, "--%", &lv_font_montserrat_28, 0xFFC107, LV_ALIGN_BOTTOM_MID, 0, -10);
-  lblVolt = rotulo(gCockpit, "--V", &lv_font_montserrat_28, 0x4CAF50, LV_ALIGN_BOTTOM_RIGHT, -14, -10);
-  criarPopup(scr);
-}
-
-// ============ Estilo 2: BARRAS (RPM/vel/temp/comb em barras horizontais) ============
-static lv_obj_t* linhaBarra(lv_obj_t* par, int y, const char* nome, uint32_t cor,
-                            lv_obj_t** outVal, lv_obj_t** outBar, int range) {
-  rotulo(par, nome, &lv_font_montserrat_14, 0x78909C, LV_ALIGN_TOP_LEFT, 12, y);
-  *outVal = rotulo(par, "0", &lv_font_montserrat_28, cor, LV_ALIGN_TOP_RIGHT, -12, y - 6);
-  lv_obj_t* bar = lv_bar_create(par);
-  lv_obj_set_size(bar, 296, 12);
-  lv_obj_align(bar, LV_ALIGN_TOP_MID, 0, y + 26);
-  lv_bar_set_range(bar, 0, range);
-  lv_obj_set_style_bg_color(bar, lv_color_hex(0x16202F), LV_PART_MAIN);
-  lv_obj_set_style_bg_color(bar, lv_color_hex(cor), LV_PART_INDICATOR);
-  lv_obj_set_style_radius(bar, 6, LV_PART_INDICATOR);
-  if (outBar) *outBar = bar;
-  return bar;
-}
-void montarCockpit2() {
-  lv_obj_t* scr = lv_scr_act();
-  lv_obj_set_style_bg_color(scr, lv_color_hex(0x05070D), 0);
-  gCockpit = lv_obj_create(scr);
-  lv_obj_set_size(gCockpit, LV_W, LV_H);
-  lv_obj_center(gCockpit);
-  lv_obj_set_style_bg_opa(gCockpit, LV_OPA_TRANSP, 0);
-  lv_obj_set_style_border_width(gCockpit, 0, 0);
-  lv_obj_clear_flag(gCockpit, LV_OBJ_FLAG_SCROLLABLE);
-
-  linhaBarra(gCockpit, 8,  "RPM",         0x00E5FF, &lblRpm,  &barRpm, 8000);
-  linhaBarra(gCockpit, 66, "VELOCIDADE",  0x00B0FF, &lblVel,  &barVel, 240);
-  linhaBarra(gCockpit, 124,"TEMPERATURA", 0x4CAF50, &lblTemp, NULL,    150);
-  linhaBarra(gCockpit, 182,"COMBUSTIVEL", 0xFFC107, &lblComb, NULL,    100);
-  // tensao no cabecalho (canto)
-  lblVolt = rotulo(gCockpit, "--V", &lv_font_montserrat_14, 0x90A4AE, LV_ALIGN_BOTTOM_RIGHT, -12, -2);
-  criarPopup(scr);
-}
-
-// ============ Estilo 3: COCKPIT (mosaico de tiles) ============
-static void tile(lv_obj_t* par, int x, int y, int w, int h, const char* nome, uint32_t cor,
-                 lv_obj_t** outVal) {
-  lv_obj_t* c = lv_obj_create(par);
-  lv_obj_set_size(c, w, h);
-  lv_obj_set_pos(c, x, y);
-  lv_obj_set_style_bg_color(c, lv_color_hex(0x0A0F18), 0);
-  lv_obj_set_style_border_color(c, lv_color_hex(cor), 0);
-  lv_obj_set_style_border_width(c, 2, 0);
-  lv_obj_set_style_radius(c, 10, 0);
-  lv_obj_set_style_pad_all(c, 6, 0);
-  lv_obj_clear_flag(c, LV_OBJ_FLAG_SCROLLABLE);
-  rotulo(c, nome, &lv_font_montserrat_14, cor, LV_ALIGN_TOP_LEFT, 2, 0);
-  *outVal = rotulo(c, "--", &lv_font_montserrat_28, 0xFFFFFF, LV_ALIGN_BOTTOM_LEFT, 2, -2);
-}
-void montarCockpit3() {
-  lv_obj_t* scr = lv_scr_act();
-  lv_obj_set_style_bg_color(scr, lv_color_hex(0x05070D), 0);
+  lv_obj_set_style_bg_color(scr, lv_color_hex(bgScr), 0);
   gCockpit = lv_obj_create(scr);
   lv_obj_set_size(gCockpit, LV_W, LV_H);
   lv_obj_center(gCockpit);
@@ -3041,28 +3001,172 @@ void montarCockpit3() {
   lv_obj_set_style_border_width(gCockpit, 0, 0);
   lv_obj_set_style_pad_all(gCockpit, 0, 0);
   lv_obj_clear_flag(gCockpit, LV_OBJ_FLAG_SCROLLABLE);
+  return scr;
+}
 
-  const int W = 152, H = 74, gap = 8, x0 = 6, y0 = 6;
-  tile(gCockpit, x0,            y0,            W, H, "VELOC (km/h)", 0x00E5FF, &lblVel);
-  tile(gCockpit, x0 + W + gap,  y0,            W, H, "RPM",          0x00B0FF, &lblRpm);
-  tile(gCockpit, x0,            y0 + H + gap,  W, H, "TEMP (C)",     0x4CAF50, &lblTemp);
-  tile(gCockpit, x0 + W + gap,  y0 + H + gap,  W, H, "COMB (%)",     0xFFC107, &lblComb);
-  tile(gCockpit, x0,            y0 + 2*(H+gap),W, H, "BATERIA (V)",  0x00E676, &lblVolt);
-  tile(gCockpit, x0 + W + gap,  y0 + 2*(H+gap),W, H, "HORA",         0x7C4DFF, &lblHora);
+// Conta-giro circular reutilizado pelos estilos esportivos. Preenche meter/indArco
+// e ajusta meterMax=8. corLo->corHi = gradiente da escala; redline = inicio da zona vermelha.
+static void criarTacometro(lv_obj_t* par, int size, lv_align_t al, int x, int y,
+                           uint32_t corLo, uint32_t corHi, uint32_t corArco, uint32_t corTicks,
+                           int redline) {
+  lv_obj_t* m = lv_meter_create(par);
+  lv_obj_set_size(m, size, size);
+  lv_obj_align(m, al, x, y);
+  lv_obj_set_style_bg_opa(m, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(m, 0, 0);
+  lv_obj_set_style_pad_all(m, 2, 0);
+  lv_meter_scale_t* sc = lv_meter_add_scale(m);
+  lv_meter_set_scale_range(m, sc, 0, 8, 270, 135);
+  lv_meter_set_scale_ticks(m, sc, 41, 2, 9, lv_color_hex(0x33424F));
+  lv_meter_set_scale_major_ticks(m, sc, 5, 4, 16, lv_color_hex(corTicks), 12);
+  lv_obj_set_style_text_color(m, lv_color_hex(0xFFFFFF), LV_PART_TICKS);
+  lv_obj_set_style_text_font(m, &lv_font_montserrat_14, LV_PART_TICKS);
+  lv_meter_indicator_t* faixa = lv_meter_add_scale_lines(m, sc, lv_color_hex(corLo), lv_color_hex(corHi), false, 0);
+  lv_meter_set_indicator_start_value(m, faixa, 0);
+  lv_meter_set_indicator_end_value(m, faixa, redline);
+  lv_meter_indicator_t* red = lv_meter_add_scale_lines(m, sc, lv_color_hex(0xFF1744), lv_color_hex(0xFF1744), false, 0);
+  lv_meter_set_indicator_start_value(m, red, redline);
+  lv_meter_set_indicator_end_value(m, red, 8);
+  indArco = lv_meter_add_arc(m, sc, 9, lv_color_hex(corArco), -3);
+  lv_meter_set_indicator_start_value(m, indArco, 0);
+  lv_meter_set_indicator_end_value(m, indArco, 0);
+  meter = m; meterMax = 8;
+}
+
+// ============ Estilo 1: FERRARI (conta-giro amarelo central, velocidade dentro) ============
+void montarCockpit1() {
+  lv_obj_t* scr = baseCockpit(0x0A0A0A);
+
+  // faixa vermelha no topo (assinatura rosso corsa)
+  lv_obj_t* topo = lv_obj_create(gCockpit);
+  lv_obj_set_size(topo, LV_W, 5);
+  lv_obj_align(topo, LV_ALIGN_TOP_MID, 0, 0);
+  lv_obj_set_style_bg_color(topo, lv_color_hex(0xD40000), 0);
+  lv_obj_set_style_border_width(topo, 0, 0);
+  lv_obj_set_style_radius(topo, 0, 0);
+
+  // conta-giro amarelo Ferrari (redline em 6k), grande a esquerda
+  criarTacometro(gCockpit, 210, LV_ALIGN_LEFT_MID, 4, 6, 0xFFD54F, 0xFFA000, 0xFFD600, 0xFFECB3, 6);
+
+  // velocidade DENTRO do medidor
+  lblVel = lv_label_create(gCockpit);
+  lv_label_set_text(lblVel, "0");
+  lv_obj_set_style_text_font(lblVel, &lv_font_montserrat_40, 0);
+  lv_obj_set_style_text_color(lblVel, lv_color_white(), 0);
+  lv_obj_set_width(lblVel, 200);
+  lv_obj_set_style_text_align(lblVel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align_to(lblVel, meter, LV_ALIGN_CENTER, 0, -6);
+  rotulo(gCockpit, "KM/H", &lv_font_montserrat_14, 0x90A4AE, LV_ALIGN_LEFT_MID, 92, 24);
+
+  // coluna direita: TEMP, COMB, bateria iPhone, relogio
+  rotulo(gCockpit, "TEMP", &lv_font_montserrat_14, 0x78909C, LV_ALIGN_TOP_RIGHT, -8, 14);
+  lblTemp = rotulo(gCockpit, "--C", &lv_font_montserrat_28, 0x4CAF50, LV_ALIGN_TOP_RIGHT, -8, 30);
+  rotulo(gCockpit, "COMB", &lv_font_montserrat_14, 0x78909C, LV_ALIGN_TOP_RIGHT, -8, 70);
+  lblComb = rotulo(gCockpit, "--%", &lv_font_montserrat_28, 0xFFC107, LV_ALIGN_TOP_RIGHT, -8, 86);
+  criarBateriaIphone(gCockpit, LV_ALIGN_TOP_RIGHT, -26, 132, 52, 22, true);
+  lblHora = rotulo(gCockpit, "--:--", &lv_font_montserrat_28, 0xB0BEC5, LV_ALIGN_BOTTOM_RIGHT, -8, -6);
+  criarPopup(scr);
+}
+
+// ============ Estilo 2: LAMBORGHINI (hexagono angular verde, velocidade gigante) ============
+void montarCockpit2() {
+  lv_obj_t* scr = baseCockpit(0x080A06);
+
+  // moldura hexagonal (assinatura Lamborghini) ao redor do conta-giro, a esquerda
+  static lv_point_t hex[7] = {{100,22},{178,68},{178,160},{100,206},{22,160},{22,68},{100,22}};
+  lv_obj_t* linha = lv_line_create(gCockpit);
+  lv_line_set_points(linha, hex, 7);
+  lv_obj_set_style_line_color(linha, lv_color_hex(0xAEEA00), 0);
+  lv_obj_set_style_line_width(linha, 3, 0);
+  lv_obj_set_style_line_rounded(linha, false, 0);
+
+  // conta-giro verde acido dentro do hexagono
+  criarTacometro(gCockpit, 150, LV_ALIGN_LEFT_MID, 25, -6, 0xAEEA00, 0xFF3D00, 0x76FF03, 0xCCFF90, 6);
+  rotulo(gCockpit, "x1000 RPM", &lv_font_montserrat_14, 0x557000, LV_ALIGN_LEFT_MID, 60, 66);
+
+  // velocidade grande na direita (fonte 40 real, sem zoom p/ nao cortar na borda)
+  lblVel = lv_label_create(gCockpit);
+  lv_label_set_text(lblVel, "0");
+  lv_obj_set_style_text_font(lblVel, &lv_font_montserrat_40, 0);
+  lv_obj_set_style_text_color(lblVel, lv_color_white(), 0);
+  lv_obj_set_width(lblVel, 140);
+  lv_obj_set_style_text_align(lblVel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(lblVel, LV_ALIGN_TOP_RIGHT, -4, 40);
+  rotulo(gCockpit, "KM/H", &lv_font_montserrat_14, 0x9E9E9E, LV_ALIGN_TOP_RIGHT, -60, 90);
+
+  lblTemp = rotulo(gCockpit, "--C", &lv_font_montserrat_28, 0x4CAF50, LV_ALIGN_TOP_RIGHT, -80, 118);
+  lblComb = rotulo(gCockpit, "--%", &lv_font_montserrat_28, 0xFFC107, LV_ALIGN_TOP_RIGHT, -14, 118);
+  criarBateriaIphone(gCockpit, LV_ALIGN_BOTTOM_RIGHT, -40, -22, 52, 22, true);
+  criarPopup(scr);
+}
+
+// ============ Estilo 3: TESLA (minimalista, velocidade enorme + barra de RPM) ============
+void montarCockpit3() {
+  lv_obj_t* scr = baseCockpit(0x000000);
+
+  // velocidade grande e limpa em cima a esquerda (estilo Tesla), fonte real (nitida)
+  lblVel = lv_label_create(gCockpit);
+  lv_label_set_text(lblVel, "0");
+  lv_obj_set_style_text_font(lblVel, &lv_font_montserrat_40, 0);
+  lv_obj_set_style_text_color(lblVel, lv_color_white(), 0);
+  lv_obj_align(lblVel, LV_ALIGN_TOP_LEFT, 24, 22);
+  rotulo(gCockpit, "km/h", &lv_font_montserrat_28, 0x8E9AA6, LV_ALIGN_TOP_LEFT, 30, 66);
+
+  // relogio no canto
+  lblHora = rotulo(gCockpit, "--:--", &lv_font_montserrat_28, 0xE0E0E0, LV_ALIGN_TOP_RIGHT, -14, 22);
+
+  // conta-giro como barra fina arredondada (Tesla nao tem ponteiro; usa barra limpa)
+  rotulo(gCockpit, "RPM", &lv_font_montserrat_14, 0x5A6B7A, LV_ALIGN_LEFT_MID, 16, 18);
+  lblRpm = rotulo(gCockpit, "0", &lv_font_montserrat_14, 0x0A84FF, LV_ALIGN_RIGHT_MID, -16, 18);
+  barRpm = lv_bar_create(gCockpit);
+  lv_obj_set_size(barRpm, 288, 12);
+  lv_obj_align(barRpm, LV_ALIGN_CENTER, 0, 40);
+  lv_bar_set_range(barRpm, 0, 8000);
+  lv_obj_set_style_bg_color(barRpm, lv_color_hex(0x1C1C1E), LV_PART_MAIN);
+  lv_obj_set_style_radius(barRpm, 6, LV_PART_MAIN);
+  lv_obj_set_style_bg_color(barRpm, lv_color_hex(0x0A84FF), LV_PART_INDICATOR);
+  lv_obj_set_style_radius(barRpm, 6, LV_PART_INDICATOR);
+
+  // rodape: TEMP | COMB | bateria iPhone
+  rotulo(gCockpit, "TEMP", &lv_font_montserrat_14, 0x5A6B7A, LV_ALIGN_BOTTOM_LEFT, 16, -34);
+  lblTemp = rotulo(gCockpit, "--C", &lv_font_montserrat_28, 0xE0E0E0, LV_ALIGN_BOTTOM_LEFT, 16, -6);
+  rotulo(gCockpit, "COMB", &lv_font_montserrat_14, 0x5A6B7A, LV_ALIGN_BOTTOM_MID, -10, -34);
+  lblComb = rotulo(gCockpit, "--%", &lv_font_montserrat_28, 0xE0E0E0, LV_ALIGN_BOTTOM_MID, -10, -6);
+  criarBateriaIphone(gCockpit, LV_ALIGN_BOTTOM_RIGHT, -34, -30, 54, 22, true);
   criarPopup(scr);
 }
 
 // ---------- Dispatcher: monta o painel do estilo escolhido ----------
 void montarCockpit() {
   // zera todos os handles (cada estilo cria so os que usa; atualizarCockpit checa NULL)
-  meter = NULL; indArco = NULL; barRpm = NULL; barVel = NULL;
+  meter = NULL; indArco = NULL; barRpm = NULL; barVel = NULL; meterMax = 10;
   lblVel = lblRpm = lblTemp = lblData = lblVoltTit = lblVolt = lblComb = lblHora = NULL;
   popup = NULL; popupMsg = NULL; popupIcon = NULL;
+  batBody = NULL; batFill = NULL; batTxt = NULL;
   switch (cockpit_estilo) {
     case 1: montarCockpit1(); break;
     case 2: montarCockpit2(); break;
     case 3: montarCockpit3(); break;
     default: montarCockpit0();
+  }
+}
+
+// Atualiza o icone de bateria estilo iPhone: 11.0V=vazio, 12.6V=cheio.
+// Verde >50%, amarelo 20-50%, vermelho <20% (mesma paleta do iOS).
+static void atualizarBateria(float v) {
+  if (!batFill) return;
+  float pct = (v - 11.0f) / 1.6f;
+  if (pct < 0) pct = 0;
+  if (pct > 1) pct = 1;
+  int w = (int)(pct * batInnerW + 0.5f);
+  if (w < 3 && v > 0.5f) w = 3;   // sempre mostra um tracinho se ha leitura valida
+  lv_obj_set_width(batFill, w);
+  uint32_t cor = (pct < 0.20f) ? 0xFF3B30 : (pct < 0.50f ? 0xFFCC00 : 0x34C759);
+  lv_obj_set_style_bg_color(batFill, lv_color_hex(cor), 0);
+  if (batTxt) {
+    char b[10];
+    if (v > 0.5f) snprintf(b, sizeof(b), "%.1fV", v); else snprintf(b, sizeof(b), "--V");
+    lv_label_set_text(batTxt, b);
   }
 }
 
@@ -3088,6 +3192,7 @@ void atualizarCockpit(DadosCarro &d) {
   if (lblRpm) { snprintf(b, sizeof(b), "%d", rpm);  lv_label_set_text(lblRpm, b); }
 
   int arc = rpm / 1000;
+  if (arc > meterMax) arc = meterMax;   // nao deixa o arco passar do fim da escala
   if (arc != last_arc) {
     if (meter && indArco) lv_meter_set_indicator_end_value(meter, indArco, arc);
     last_arc = arc;
@@ -3096,9 +3201,9 @@ void atualizarCockpit(DadosCarro &d) {
   if (barVel) lv_bar_set_value(barVel, vel, LV_ANIM_OFF);
 
   if (d.temp_motor > -40 && lblTemp) {
-    // no estilo Barras/Cockpit o rotulo ja diz "TEMP"; mostra so o numero. No classico, "TEMP xxC".
+    // no classico o rotulo do valor ja diz "TEMP"; nos demais o titulo fica ao lado -> so o numero+C.
     if (cockpit_estilo == 0) snprintf(b, sizeof(b), "TEMP %dC", d.temp_motor);
-    else                     snprintf(b, sizeof(b), "%d", d.temp_motor);
+    else                     snprintf(b, sizeof(b), "%dC", d.temp_motor);
     lv_label_set_text(lblTemp, b);
     int band = d.temp_motor > 100 ? 1 : 0;
     if (band != last_band) {
@@ -3110,9 +3215,10 @@ void atualizarCockpit(DadosCarro &d) {
   if (lblVoltTit)
     lv_label_set_text(lblVoltTit, ligado ? (LV_SYMBOL_CHARGE " ALTERN.") : (LV_SYMBOL_BATTERY_FULL " BAT."));
   if (lblVolt && d.tensao > 0) { snprintf(b, sizeof(b), "%.1fV", d.tensao); lv_label_set_text(lblVolt, b); }
+  atualizarBateria(d.tensao);   // icone de bateria estilo iPhone (checa NULL internamente)
 
   if (lblComb) {
-    if (d.combust >= 0) { snprintf(b, sizeof(b), (cockpit_estilo == 0) ? "%d%%" : "%d", d.combust); lv_label_set_text(lblComb, b); }
+    if (d.combust >= 0) { snprintf(b, sizeof(b), "%d%%", d.combust); lv_label_set_text(lblComb, b); }
     else lv_label_set_text(lblComb, "--");
   }
 
@@ -3751,9 +3857,9 @@ void montarPlaceholder(const char* txt) {
 // ============================================================
 //  Pagina TEMAS: usuario escolhe o estilo do painel (0-3)
 // ============================================================
-static const char* TEMAS_NOME[4] = {"Classico", "Minimalista", "Barras", "Cockpit"};
+static const char* TEMAS_NOME[4] = {"Classico", "Ferrari", "Lamborghini", "Tesla"};
 static const char* TEMAS_DESC[4] = {
-  "Medidor circular + dados", "Velocidade gigante", "Barras horizontais", "Mosaico de tiles"
+  "Medidor circular + dados", "Conta-giro amarelo central", "Hexagono + velocidade gigante", "Minimalista branco/preto"
 };
 
 void montarTemas() {
