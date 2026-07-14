@@ -131,6 +131,12 @@ lib/
   com medidores circulares, Minimalista, Cockpit neon) — botão de ajuste ⚙️ abre a
   tela de seleção com prévia. Inclui **gráfico de RPM em tempo real** e card de
   **velocidade** (atual / máx. do dia / recorde) que abre o **Histórico de Velocidade**.
+- **Consumo de combustível:** ícone ⛽ na barra do Painel abre os **gráficos de consumo**.
+  Como o aparelho manda o **km do hodômetro** e o **nível do tanque (%)**, o consumo é
+  **estimado**: litros = (% gasto ÷ 100) × capacidade do tanque; **km/L** = km ÷ litros.
+  Mostra **média de km/L**, **autonomia estimada**, gráfico de **km/L por dia/mês** e de
+  **nível do tanque** ao longo dos dias. A **capacidade do tanque** é configurável (toque no
+  card "TANQUE"). Reabastecimento é detectado quando o nível sobe.
 - **Histórico de Velocidade:** grava a **velocidade máxima de cada dia** (enquanto o app
   está conectado) e mostra em **gráfico por Dia / Mês / Ano**, com o **recorde de todos os
   tempos e a data**. Ex.: "atingiu 150 km/h em 12 de julho de 2026".

@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import '../models/live_data.dart';
 import '../storage/speed_store.dart';
+import '../storage/consumption_store.dart';
 
 /// UUIDs do Nordic UART Service (NUS) — devem casar com o firmware do VEICAN.
 class VUuids {
@@ -29,6 +30,9 @@ class BleService extends ChangeNotifier {
   /// Historico recente do RPM (p/ o grafico ao vivo). Guarda ~60 amostras.
   final List<double> rpmHist = [];
   static const int _maxHist = 60;
+
+  /// Historico de consumo de combustivel (km/L e nivel do tanque por dia).
+  final consumoStore = ConsumptionStore();
 
   /// Historico de velocidade (maxima por dia) + recorde.
   final speedStore = SpeedStore();
@@ -280,6 +284,10 @@ class BleService extends ChangeNotifier {
           speedRecordeData = DateTime.now();
         }
       }
+
+      // registra o consumo (km do hodometro + nivel do tanque) -> graficos de km/L
+      await consumoStore.record(live!.km, live!.combustivel);
+
       notifyListeners();
     }
   }

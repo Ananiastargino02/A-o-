@@ -9,6 +9,7 @@ import 'dashboards/dash_sport.dart';
 import 'dashboards/dash_minimal.dart';
 import 'dashboards/dash_cockpit.dart';
 import 'dashboard_picker_screen.dart';
+import 'consumption_screen.dart';
 
 /// Aba "Painel": mostra o estilo escolhido pelo usuario.
 class DashboardScreen extends StatelessWidget {
@@ -24,6 +25,12 @@ class DashboardScreen extends StatelessWidget {
       appBar: AppBar(
         title: const Text('PAINEL'),
         actions: [
+          IconButton(
+            tooltip: 'Consumo de combustivel',
+            icon: const Icon(Icons.local_gas_station, size: 20),
+            onPressed: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const ConsumptionScreen())),
+          ),
           IconButton(
             tooltip: 'Escolher painel',
             icon: const Icon(Icons.tune, size: 20),
