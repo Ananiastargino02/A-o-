@@ -2375,7 +2375,12 @@ void taskCAN(void* param) {
           if (r >= 1) {
             ok1 = true;
             if      (pid == 0x0C && r >= 2) ultimo.rpm = ((d8[0]*256)+d8[1])/4;
-            else if (pid == 0x05)           ultimo.temp_motor = d8[0] - 40;
+            else if (pid == 0x05) {
+              // filtro de plausibilidade: o loop rapido as vezes devolve byte-lixo
+              // (ex.: -16C). Aceita so temperatura coerente; senao mantem a ultima boa.
+              int tc = d8[0] - 40;
+              if (tc >= -10 && tc <= 135) ultimo.temp_motor = tc;
+            }
             else if (pid == 0x0D)           ultimo.velocidade = d8[0];
           }
           kpid = (kpid + 1) % 3;
