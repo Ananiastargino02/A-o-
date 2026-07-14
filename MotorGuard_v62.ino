@@ -2376,10 +2376,17 @@ void taskCAN(void* param) {
             ok1 = true;
             if      (pid == 0x0C && r >= 2) ultimo.rpm = ((d8[0]*256)+d8[1])/4;
             else if (pid == 0x05) {
-              // filtro de plausibilidade: o loop rapido as vezes devolve byte-lixo
-              // (ex.: -16C). Aceita so temperatura coerente; senao mantem a ultima boa.
+              // O loop rapido K-line as vezes devolve byte-lixo (ex.: -4C, -16C).
+              // A leitura ISOLADA (KLRAW) le certo, entao filtramos o lixo:
+              //  - faixa sã (-30..135C)
+              //  - sem salto brusco (>30C entre leituras: agua nao muda tao rapido)
+              //  - com motor LIGADO (rpm>400) a agua nunca fica < 10C
               int tc = d8[0] - 40;
-              if (tc >= -10 && tc <= 135) ultimo.temp_motor = tc;
+              static int temp_bom = -1000;
+              bool sao      = (tc >= -30 && tc <= 135);
+              bool semSalto = (temp_bom <= -1000) || (abs(tc - temp_bom) <= 30);
+              bool lixoFrio = (ultimo.rpm > 400 && tc < 10);
+              if (sao && semSalto && !lixoFrio) { ultimo.temp_motor = tc; temp_bom = tc; }
             }
             else if (pid == 0x0D)           ultimo.velocidade = d8[0];
           }
@@ -2794,7 +2801,7 @@ static lv_obj_t *meter; static lv_meter_indicator_t *indArco;
 static lv_obj_t *lblVel, *lblRpm, *lblTemp, *lblData, *lblVoltTit, *lblVolt, *lblComb, *lblHora;
 static lv_obj_t *popup, *popupMsg, *popupIcon;
 static lv_obj_t *barRpm = NULL, *barVel = NULL;   // para estilos com barra
-static lv_obj_t *batBody = NULL, *batFill = NULL, *batTxt = NULL;   // bateria estilo iPhone
+static lv_obj_t *batBody = NULL, *batFill = NULL, *batTxt = NULL, *batNub = NULL;   // bateria estilo iPhone
 static int batInnerW = 0;      // largura util interna do preenchimento da bateria
 static int meterMax = 10;      // teto do arco do conta-giro (em milhares) por estilo
 uint8_t cockpit_estilo = 0;   // 0=Classico 1=Ferrari 2=Lamborghini 3=Tesla
@@ -2862,12 +2869,12 @@ static void criarBateriaIphone(lv_obj_t* par, lv_align_t al, int x, int y, int w
   lv_obj_set_style_pad_all(batBody, 2, 0);
   lv_obj_clear_flag(batBody, LV_OBJ_FLAG_SCROLLABLE);
   // terminal (o "biquinho" da bateria) na direita
-  lv_obj_t* nub = lv_obj_create(par);
-  lv_obj_set_size(nub, 3, h / 2);
-  lv_obj_align_to(nub, batBody, LV_ALIGN_OUT_RIGHT_MID, 1, 0);
-  lv_obj_set_style_bg_color(nub, lv_color_hex(0xCFD8DC), 0);
-  lv_obj_set_style_border_width(nub, 0, 0);
-  lv_obj_set_style_radius(nub, 1, 0);
+  batNub = lv_obj_create(par);
+  lv_obj_set_size(batNub, 3, h / 2);
+  lv_obj_align_to(batNub, batBody, LV_ALIGN_OUT_RIGHT_MID, 1, 0);
+  lv_obj_set_style_bg_color(batNub, lv_color_hex(0xCFD8DC), 0);
+  lv_obj_set_style_border_width(batNub, 0, 0);
+  lv_obj_set_style_radius(batNub, 1, 0);
   // preenchimento interno (largura muda com a tensao)
   batInnerW = w - 8;
   batFill = lv_obj_create(batBody);
@@ -2996,8 +3003,9 @@ void montarCockpit0() {
   lv_obj_set_style_text_color(lblHora, lv_color_hex(0xB0BEC5), 0);
   lv_obj_align(lblHora, LV_ALIGN_BOTTOM_RIGHT, -8, -6);
 
-  // bateria estilo iPhone (a tensao ja aparece em texto acima; aqui so o icone)
-  criarBateriaIphone(gCockpit, LV_ALIGN_TOP_RIGHT, -8, 150, 50, 20, false);
+  // bateria estilo iPhone (so aparece com o carro desligado; a tensao ja tem texto).
+  // Fica no rodape direito, longe do COMBUSTIVEL, e some com o motor ligado.
+  criarBateriaIphone(gCockpit, LV_ALIGN_BOTTOM_RIGHT, -8, -40, 50, 20, false);
 
   criarPopup(scr);
 }
@@ -3165,7 +3173,7 @@ void montarCockpit() {
   meter = NULL; indArco = NULL; barRpm = NULL; barVel = NULL; meterMax = 10;
   lblVel = lblRpm = lblTemp = lblData = lblVoltTit = lblVolt = lblComb = lblHora = NULL;
   popup = NULL; popupMsg = NULL; popupIcon = NULL;
-  batBody = NULL; batFill = NULL; batTxt = NULL;
+  batBody = NULL; batFill = NULL; batTxt = NULL; batNub = NULL;
   switch (cockpit_estilo) {
     case 1: montarCockpit1(); break;
     case 2: montarCockpit2(); break;
@@ -3174,9 +3182,23 @@ void montarCockpit() {
   }
 }
 
-// Atualiza o icone de bateria estilo iPhone: 11.0V=vazio, 12.6V=cheio.
-// Verde >50%, amarelo 20-50%, vermelho <20% (mesma paleta do iOS).
-static void atualizarBateria(float v) {
+// Bateria estilo iPhone. A TENSAO em texto aparece sempre (ligado = alternador,
+// desligado = bateria). Mas o ICONE de saude (11.0V vazio -> 12.6V cheio) so faz
+// sentido com o carro DESLIGADO: ligado, os ~14V sao do alternador, nao da bateria.
+static void atualizarBateria(float v, bool ligado) {
+  if (batTxt) {   // tensao em texto: sempre
+    char b[10];
+    if (v > 0.5f) snprintf(b, sizeof(b), "%.1fV", v); else snprintf(b, sizeof(b), "--V");
+    lv_label_set_text(batTxt, b);
+  }
+  if (!batBody) return;
+  if (ligado) {   // esconde o icone de saude com o motor ligado
+    lv_obj_add_flag(batBody, LV_OBJ_FLAG_HIDDEN);
+    if (batNub) lv_obj_add_flag(batNub, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  lv_obj_clear_flag(batBody, LV_OBJ_FLAG_HIDDEN);
+  if (batNub) lv_obj_clear_flag(batNub, LV_OBJ_FLAG_HIDDEN);
   if (!batFill) return;
   float pct = (v - 11.0f) / 1.6f;
   if (pct < 0) pct = 0;
@@ -3186,11 +3208,6 @@ static void atualizarBateria(float v) {
   lv_obj_set_width(batFill, w);
   uint32_t cor = (pct < 0.20f) ? 0xFF3B30 : (pct < 0.50f ? 0xFFCC00 : 0x34C759);
   lv_obj_set_style_bg_color(batFill, lv_color_hex(cor), 0);
-  if (batTxt) {
-    char b[10];
-    if (v > 0.5f) snprintf(b, sizeof(b), "%.1fV", v); else snprintf(b, sizeof(b), "--V");
-    lv_label_set_text(batTxt, b);
-  }
 }
 
 // ---------- Atualiza o cockpit com dados REAIS ----------
@@ -3238,7 +3255,7 @@ void atualizarCockpit(DadosCarro &d) {
   if (lblVoltTit)
     lv_label_set_text(lblVoltTit, ligado ? (LV_SYMBOL_CHARGE " ALTERN.") : (LV_SYMBOL_BATTERY_FULL " BAT."));
   if (lblVolt && d.tensao > 0) { snprintf(b, sizeof(b), "%.1fV", d.tensao); lv_label_set_text(lblVolt, b); }
-  atualizarBateria(d.tensao);   // icone de bateria estilo iPhone (checa NULL internamente)
+  atualizarBateria(d.tensao, ligado);   // tensao sempre; icone de saude so com carro desligado
 
   if (lblComb) {
     if (d.combust >= 0) { snprintf(b, sizeof(b), "%d%%", d.combust); lv_label_set_text(lblComb, b); }
