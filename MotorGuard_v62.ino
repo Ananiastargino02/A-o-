@@ -2945,7 +2945,7 @@ void montarCockpit0() {
   lv_label_set_text(xr, "x1000 RPM");
   lv_obj_set_style_text_font(xr, &lv_font_montserrat_14, 0);
   lv_obj_set_style_text_color(xr, lv_color_hex(0x455A64), 0);
-  lv_obj_align_to(xr, meter, LV_ALIGN_CENTER, 0, 38);
+  lv_obj_align_to(xr, meter, LV_ALIGN_CENTER, 0, 54);   // mais p/ baixo: nao tapa os numeros do conta-giro
 
   lblTemp = lv_label_create(gCockpit);
   lv_label_set_text(lblTemp, "TEMP --C");
