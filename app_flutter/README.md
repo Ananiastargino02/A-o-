@@ -144,4 +144,21 @@ lib/
   km, custo, oficina) e anexa **fotos** (câmera ou galeria). Fica tudo salvo no celular.
 
 Perfil do carro, histórico de manutenção e os consertos (com fotos) ficam salvos
-**no celular** (shared_preferences + arquivos locais). Nada vai pra internet.
+**no celular** (shared_preferences + arquivos locais), **separados por carro**
+(`CarScope`): ao **trocar de carro** na aba "Carro", tudo é zerado e recomeça —
+os dados de um carro nunca embolam com o outro.
+
+## Modo Frota (empresas)
+
+Na aba **Carro → Modo Frota**: para quem tem **vários carros** (ex.: uma empresa
+com 10 carros). O **patrão** cadastra todos os carros e acompanha a frota inteira
+(km, temperatura, combustível, online/offline, última atualização). Cada
+**motorista** escolhe o carro que dirige e o app **envia o retrato do carro**
+(snapshot) automaticamente enquanto conectado no Bluetooth.
+
+**Sincronização — arquitetura pronta pra nuvem:** a camada de sync é abstrata
+(`lib/fleet/fleet_sync.dart`). Hoje roda com **`LocalFleetSync`** (tudo no
+celular; ideal para "um celular gerencia vários carros"). Para o patrão ver os
+carros de **motoristas em celulares diferentes**, é só implementar o
+**`CloudFleetSync`** (esqueleto já pronto: Firebase/Supabase/API própria) e
+registrar em `FleetService.usarBackend(...)` — **nenhuma tela precisa mudar**.

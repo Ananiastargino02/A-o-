@@ -4,6 +4,7 @@ import '../ble/ble_service.dart';
 import '../models/car_profile.dart';
 import '../storage/local_store.dart';
 import '../theme.dart';
+import 'fleet/fleet_home_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -123,6 +124,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ),
             icon: const Icon(Icons.swap_horiz),
             label: const Text('TROCAR DE CARRO (zera tudo)'),
+          ),
+          const SizedBox(height: 28),
+          const Text('EMPRESA / FROTA',
+              style: TextStyle(color: VColors.textDim, letterSpacing: 2, fontSize: 13)),
+          const SizedBox(height: 8),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.local_shipping_outlined, color: VColors.cyan),
+              title: const Text('Modo Frota'),
+              subtitle: const Text('Varios carros de uma empresa (patrao ve todos)',
+                  style: TextStyle(color: VColors.textFaint)),
+              trailing: const Icon(Icons.chevron_right, color: VColors.textFaint),
+              onTap: () => Navigator.push(
+                  context, MaterialPageRoute(builder: (_) => const FleetHomeScreen())),
+            ),
           ),
           const SizedBox(height: 28),
           const Text('APARELHO',

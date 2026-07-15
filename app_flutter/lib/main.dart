@@ -4,6 +4,8 @@ import 'theme.dart';
 import 'ble/ble_service.dart';
 import 'state/app_settings.dart';
 import 'storage/car_scope.dart';
+import 'fleet/fleet_service.dart';
+import 'models/fleet_vehicle.dart';
 import 'screens/scan_screen.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/maintenance_screen.dart';
@@ -26,6 +28,7 @@ class VeicanApp extends StatelessWidget {
       providers: [
         ChangeNotifierProvider(create: (_) => BleService()),
         ChangeNotifierProvider(create: (_) => AppSettings()),
+        ChangeNotifierProvider(create: (_) => FleetService()..init()),
       ],
       child: MaterialApp(
         title: 'VEICAN',
@@ -57,6 +60,8 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   int _tab = 0;
+  BleService? _ble;
+  DateTime? _ultReport;
 
   final _telas = const [
     DashboardScreen(),
@@ -65,6 +70,41 @@ class _HomeShellState extends State<HomeShell> {
     DtcScreen(),
     ProfileScreen(),
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    // Motorista da frota: envia o retrato do carro periodicamente (a cada ~20s)
+    // enquanto conectado. (Local hoje; nuvem quando o servidor for plugado.)
+    _ble = context.read<BleService>();
+    _ble!.addListener(_reportarFrota);
+  }
+
+  void _reportarFrota() {
+    if (!mounted) return;
+    final ble = _ble;
+    final d = ble?.live;
+    if (ble == null || d == null) return;
+    final agora = DateTime.now();
+    if (_ultReport != null && agora.difference(_ultReport!).inSeconds < 20) return;
+    _ultReport = agora;
+    context.read<FleetService>().reportar(VehicleSnapshot(
+          km: d.km,
+          rpm: d.rpm,
+          velocidade: d.velocidade,
+          temp: d.temp,
+          combustivel: d.combustivel,
+          bateria: d.bateria,
+          estado: d.estado,
+          visto: agora,
+        ));
+  }
+
+  @override
+  void dispose() {
+    _ble?.removeListener(_reportarFrota);
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
