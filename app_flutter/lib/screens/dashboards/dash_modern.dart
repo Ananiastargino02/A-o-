@@ -23,20 +23,20 @@ class DashModern extends StatelessWidget {
           _liveHeader(),
           const SizedBox(height: 8),
 
-          // Conta-giro (hero) com brilho
-          Center(
-            child: Container(
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                boxShadow: [
-                  BoxShadow(
-                    color: (d.rpm >= 6000 ? VColors.red : VColors.cyan)
-                        .withValues(alpha: 0.28),
-                    blurRadius: 44,
-                    spreadRadius: 2,
-                  ),
-                ],
-              ),
+          // Conta-giro (hero) num cartao com borda
+          Container(
+            padding: const EdgeInsets.symmetric(vertical: 18),
+            decoration: BoxDecoration(
+              color: VColors.card,
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(
+                  color: (d.rpm >= 6000 ? VColors.red : VColors.cyan).withValues(alpha: 0.55),
+                  width: 1.6),
+              boxShadow: [
+                BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 14, offset: const Offset(0, 6)),
+              ],
+            ),
+            child: Center(
               child: CircularGauge(
                 value: d.rpm.toDouble(),
                 max: 8000,
@@ -121,7 +121,7 @@ class DashModern extends StatelessWidget {
           end: Alignment.centerRight,
         ),
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: cor.withValues(alpha: 0.4)),
+        border: Border.all(color: cor.withValues(alpha: 0.55), width: 1.6),
       ),
       child: Row(
         children: [
@@ -148,7 +148,7 @@ class DashModern extends StatelessWidget {
       decoration: BoxDecoration(
         color: VColors.card,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: cor.withValues(alpha: 0.30)),
+        border: Border.all(color: cor.withValues(alpha: 0.55), width: 1.5),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

@@ -63,7 +63,7 @@ class DashSport extends StatelessWidget {
         decoration: BoxDecoration(
           color: VColors.card,
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: cor.withValues(alpha: 0.35)),
+          border: Border.all(color: cor.withValues(alpha: 0.55), width: 1.5),
         ),
         child: Column(children: [
           Icon(ic, color: cor, size: 22),

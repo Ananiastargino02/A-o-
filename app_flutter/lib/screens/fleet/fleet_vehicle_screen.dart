@@ -121,7 +121,7 @@ class FleetVehicleScreen extends StatelessWidget {
         decoration: BoxDecoration(
           color: VColors.card,
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: cor.withValues(alpha: 0.3)),
+          border: Border.all(color: cor.withValues(alpha: 0.55), width: 1.5),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
