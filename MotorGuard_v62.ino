@@ -731,15 +731,21 @@ bool eepromReadBytes(uint16_t addr, uint8_t* buf, uint16_t len) {
   return ok;
 }
 
-// Wrappers do RTC com mutex I2C (RTC e EEPROM dividem o barramento)
+// Wrappers do RTC com mutex I2C (RTC e EEPROM dividem o barramento).
+// TIMEOUT em vez de portMAX_DELAY: se o barramento engasgar (ruido do carro
+// andando durante uma gravacao da EEPROM), NUNCA trava — devolve o ultimo
+// horario bom. Era essa trava que reiniciava o aparelho so com o carro andando.
 DateTime rtcNow() {
-  if (mutex_i2c) xSemaphoreTake(mutex_i2c, portMAX_DELAY);
-  DateTime d = rtc.now();
+  static DateTime cache(2000, 1, 1, 0, 0, 0);   // ultimo valor bom (semente no boot)
+  if (mutex_i2c && xSemaphoreTake(mutex_i2c, pdMS_TO_TICKS(150)) != pdTRUE) {
+    return cache;   // barramento ocupado/travado -> ultimo valor bom, sem travar
+  }
+  cache = rtc.now();
   if (mutex_i2c) xSemaphoreGive(mutex_i2c);
-  return d;
+  return cache;
 }
 void rtcAdjust(const DateTime &dt) {
-  if (mutex_i2c) xSemaphoreTake(mutex_i2c, portMAX_DELAY);
+  if (mutex_i2c && xSemaphoreTake(mutex_i2c, pdMS_TO_TICKS(300)) != pdTRUE) return;
   rtc.adjust(dt);
   if (mutex_i2c) xSemaphoreGive(mutex_i2c);
 }
@@ -4078,8 +4084,15 @@ Preferences speedPrefs;
 
 static uint32_t speedHojeAAAAMMDD() {
   if (!rtc_ok) return 0;
+  // cache: a data so muda na virada do dia. Evita ler o RTC (I2C) a cada segundo
+  // enquanto anda -> menos trafego no barramento = menos risco de engasgo.
+  static uint32_t diaCache = 0, ultLeitura = 0;
+  uint32_t agora = millis();
+  if (diaCache != 0 && (agora - ultLeitura) < 30000) return diaCache;
   DateTime n = rtcNow();
-  return (uint32_t)n.year() * 10000UL + (uint32_t)n.month() * 100UL + n.day();
+  ultLeitura = agora;
+  diaCache = (uint32_t)n.year() * 10000UL + (uint32_t)n.month() * 100UL + n.day();
+  return diaCache;
 }
 
 void speedCarregar() {
@@ -4358,6 +4371,7 @@ void setup() {
 
   Wire.begin(21, 22);
   Wire.setClock(100000);
+  Wire.setTimeOut(50);   // I2C nao pode travar: aborta apos 50ms (ruido do carro andando)
 
   if (!rtc.begin()) Serial.println("[ERRO] RTC");
   else {
