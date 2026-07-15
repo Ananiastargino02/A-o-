@@ -3,10 +3,12 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/repair.dart';
+import 'car_scope.dart';
 
 /// Persistencia dos consertos (metadados no shared_preferences, fotos em arquivo).
+/// A LISTA de consertos e POR CARRO (CarScope).
 class RepairStore {
-  static const _kRepairs = 'repairs_v1';
+  static String get _kRepairs => CarScope.key('repairs_v1');
 
   Future<List<RepairRecord>> load() async {
     final p = await SharedPreferences.getInstance();

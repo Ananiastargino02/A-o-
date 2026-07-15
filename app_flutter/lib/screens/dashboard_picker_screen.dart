@@ -103,6 +103,27 @@ class DashboardPickerScreen extends StatelessWidget {
   /// Mini ilustracao de cada estilo (so decorativa).
   Widget _preview(DashboardStyle e) {
     switch (e) {
+      case DashboardStyle.modern:
+        return Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                width: 58,
+                height: 58,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(color: VColors.cyan, width: 5),
+                  boxShadow: [BoxShadow(color: VColors.cyan.withValues(alpha: 0.5), blurRadius: 10)],
+                ),
+                child: const Center(
+                    child: Text('3k', style: TextStyle(color: VColors.cyan, fontWeight: FontWeight.bold, fontSize: 13))),
+              ),
+              const SizedBox(height: 8),
+              _bar(VColors.blue, 0.8, h: 8),
+            ],
+          ),
+        );
       case DashboardStyle.cards:
         return Padding(
           padding: const EdgeInsets.all(10),

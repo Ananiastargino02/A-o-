@@ -1,12 +1,20 @@
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'car_scope.dart';
 
 /// Guarda a VELOCIDADE MAXIMA de cada dia (km/h), pra montar o historico
 /// e o recorde. Chave = "yyyy-MM-dd", valor = maior velocidade do dia.
+/// Os dados sao POR CARRO (CarScope).
 class SpeedStore {
-  static const _k = 'speed_daily_v1';
+  static String get _k => CarScope.key('speed_daily_v1');
   Map<String, int> _daily = {};
   bool _loaded = false;
+
+  /// Zera o cache em memoria (usar ao TROCAR de carro).
+  void reset() {
+    _daily = {};
+    _loaded = false;
+  }
 
   Future<void> _ensure() async {
     if (_loaded) return;

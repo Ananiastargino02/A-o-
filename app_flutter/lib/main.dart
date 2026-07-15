@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import 'theme.dart';
 import 'ble/ble_service.dart';
 import 'state/app_settings.dart';
+import 'storage/car_scope.dart';
 import 'screens/scan_screen.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/maintenance_screen.dart';
@@ -10,8 +11,9 @@ import 'screens/repairs_screen.dart';
 import 'screens/dtc_screen.dart';
 import 'screens/profile_screen.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await CarScope.init();   // carrega o carro ativo (dados sao separados por carro)
   runApp(const VeicanApp());
 }
 

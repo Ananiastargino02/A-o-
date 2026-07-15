@@ -49,6 +49,39 @@ class _ProfileScreenState extends State<ProfileScreen> {
     FocusScope.of(context).unfocus();
   }
 
+  Future<void> _trocarCarro() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: VColors.card,
+        title: const Text('Trocar de carro?'),
+        content: const Text(
+            'Isso apaga TODOS os dados do carro atual (perfil, manutencao, '
+            'consertos, velocidade e consumo) e comeca um novo do zero.\n\n'
+            'Use quando instalar o VEICAN em outro carro.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancelar')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: VColors.amber, foregroundColor: Colors.black),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Trocar e zerar'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await context.read<BleService>().trocarCarro();
+    _nome.clear();
+    _marca.clear();
+    _modelo.clear();
+    _ano.clear();
+    if (!mounted) return;
+    setState(() {});
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Carro novo. Cadastre os dados do carro atual.'),
+        backgroundColor: VColors.cardHi));
+  }
+
   @override
   void dispose() {
     _nome.dispose();
@@ -78,6 +111,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
             onPressed: _salvar,
             icon: const Icon(Icons.save_outlined),
             label: const Text('SALVAR'),
+          ),
+          const SizedBox(height: 10),
+          OutlinedButton.icon(
+            onPressed: _trocarCarro,
+            style: OutlinedButton.styleFrom(
+              foregroundColor: VColors.amber,
+              side: const BorderSide(color: VColors.amber),
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+            ),
+            icon: const Icon(Icons.swap_horiz),
+            label: const Text('TROCAR DE CARRO (zera tudo)'),
           ),
           const SizedBox(height: 28),
           const Text('APARELHO',

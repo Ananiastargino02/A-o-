@@ -2,11 +2,13 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/car_profile.dart';
 import '../models/maintenance.dart';
+import 'car_scope.dart';
 
-/// Persistencia local no celular (perfil do carro + historico de manutencao).
+/// Persistencia local no celular. Perfil e historico de manutencao sao POR CARRO
+/// (CarScope). O ultimo aparelho conectado e global (do celular).
 class LocalStore {
-  static const _kProfile = 'car_profile';
-  static const _kHistory = 'maint_history';
+  static String get _kProfile => CarScope.key('car_profile');
+  static String get _kHistory => CarScope.key('maint_history');
   static const _kLastDevice = 'last_device_id';
 
   Future<CarProfile> loadProfile() async {

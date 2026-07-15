@@ -6,7 +6,7 @@ import '../models/dashboard_style.dart';
 class AppSettings extends ChangeNotifier {
   static const _kDash = 'dash_style';
 
-  DashboardStyle _dash = DashboardStyle.cards;
+  DashboardStyle _dash = DashboardStyle.modern;
   DashboardStyle get dash => _dash;
 
   AppSettings() {

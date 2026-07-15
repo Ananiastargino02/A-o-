@@ -4,6 +4,7 @@ import '../ble/ble_service.dart';
 import '../models/dashboard_style.dart';
 import '../state/app_settings.dart';
 import '../theme.dart';
+import 'dashboards/dash_modern.dart';
 import 'dashboards/dash_cards.dart';
 import 'dashboards/dash_sport.dart';
 import 'dashboards/dash_minimal.dart';
@@ -43,14 +44,17 @@ class DashboardScreen extends StatelessWidget {
           ),
         ],
       ),
-      body: d == null
-          ? const Center(child: CircularProgressIndicator(color: VColors.cyan))
-          : switch (estilo) {
-              DashboardStyle.cards => DashCards(d, ble),
-              DashboardStyle.sport => DashSport(d, ble),
-              DashboardStyle.minimal => DashMinimal(d, ble),
-              DashboardStyle.cockpit => DashCockpit(d, ble),
-            },
+      body: VBackground(
+        child: d == null
+            ? const Center(child: CircularProgressIndicator(color: VColors.cyan))
+            : switch (estilo) {
+                DashboardStyle.modern => DashModern(d, ble),
+                DashboardStyle.cards => DashCards(d, ble),
+                DashboardStyle.sport => DashSport(d, ble),
+                DashboardStyle.minimal => DashMinimal(d, ble),
+                DashboardStyle.cockpit => DashCockpit(d, ble),
+              },
+      ),
     );
   }
 

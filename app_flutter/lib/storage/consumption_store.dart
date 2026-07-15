@@ -1,8 +1,9 @@
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'car_scope.dart';
 
 /// Registra o CONSUMO de combustivel a partir do hodometro (km) e do nivel do
-/// tanque (%) que o aparelho manda no STATUS.
+/// tanque (%) que o aparelho manda no STATUS. Dados POR CARRO (CarScope).
 ///
 /// O VEICAN nao le vazao direta, entao o consumo e ESTIMADO:
 ///   litros gastos = (% de tanque gasto / 100) x capacidade do tanque
@@ -10,15 +11,24 @@ import 'package:shared_preferences/shared_preferences.dart';
 ///
 /// Reabastecimento e detectado quando o nivel SOBE (nesse passo nao conta gasto).
 class ConsumptionStore {
-  static const _kDaily = 'consumo_daily_v1';
-  static const _kState = 'consumo_state_v1';
-  static const _kTank = 'consumo_tank_l';
+  static String get _kDaily => CarScope.key('consumo_daily_v1');
+  static String get _kState => CarScope.key('consumo_state_v1');
+  static String get _kTank => CarScope.key('consumo_tank_l');
 
   final Map<String, _Dia> _daily = {};
   int _lastKm = -1;
   int _lastFuel = -1;
   double tankLiters = 50; // capacidade do tanque em litros (editavel)
   bool _loaded = false;
+
+  /// Zera o cache em memoria (usar ao TROCAR de carro).
+  void reset() {
+    _daily.clear();
+    _lastKm = -1;
+    _lastFuel = -1;
+    tankLiters = 50;
+    _loaded = false;
+  }
 
   Future<void> _ensure() async {
     if (_loaded) return;

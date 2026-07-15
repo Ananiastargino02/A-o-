@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
 
-/// Os 4 estilos de painel principal que o usuario pode escolher.
-enum DashboardStyle { cards, sport, minimal, cockpit }
+/// Os estilos de painel principal que o usuario pode escolher.
+enum DashboardStyle { modern, cards, sport, minimal, cockpit }
 
 extension DashboardStyleX on DashboardStyle {
   String get nome => switch (this) {
+        DashboardStyle.modern => 'Moderno',
         DashboardStyle.cards => 'Cartoes',
         DashboardStyle.sport => 'Esportivo',
         DashboardStyle.minimal => 'Minimalista',
@@ -12,6 +13,7 @@ extension DashboardStyleX on DashboardStyle {
       };
 
   String get descricao => switch (this) {
+        DashboardStyle.modern => 'Conta-giro ao vivo, velocidade em destaque e RPM em tempo real.',
         DashboardStyle.cards => 'Informativo e organizado, com todos os dados em cartoes.',
         DashboardStyle.sport => 'Medidores circulares grandes de RPM e velocidade.',
         DashboardStyle.minimal => 'Limpo e elegante: a velocidade em destaque total.',
@@ -19,6 +21,7 @@ extension DashboardStyleX on DashboardStyle {
       };
 
   IconData get icone => switch (this) {
+        DashboardStyle.modern => Icons.auto_awesome,
         DashboardStyle.cards => Icons.dashboard_outlined,
         DashboardStyle.sport => Icons.speed,
         DashboardStyle.minimal => Icons.filter_center_focus,
@@ -29,5 +32,5 @@ extension DashboardStyleX on DashboardStyle {
 
   static DashboardStyle fromChave(String? s) =>
       DashboardStyle.values.firstWhere((e) => e.name == s,
-          orElse: () => DashboardStyle.cards);
+          orElse: () => DashboardStyle.modern);
 }

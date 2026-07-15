@@ -5,6 +5,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import '../models/live_data.dart';
 import '../storage/speed_store.dart';
 import '../storage/consumption_store.dart';
+import '../storage/car_scope.dart';
 
 /// UUIDs do Nordic UART Service (NUS) — devem casar com o firmware do VEICAN.
 class VUuids {
@@ -290,6 +291,19 @@ class BleService extends ChangeNotifier {
 
       notifyListeners();
     }
+  }
+
+  /// Troca de carro: apaga os dados do carro atual e comeca um novo do zero
+  /// (velocidade, consumo, consertos, manutencao e perfil ficam separados).
+  Future<void> trocarCarro() async {
+    await CarScope.trocarCarro();
+    speedStore.reset();
+    consumoStore.reset();
+    speedMaxHoje = 0;
+    speedRecorde = 0;
+    speedRecordeData = null;
+    rpmHist.clear();
+    notifyListeners();
   }
 
   // ---------------- helpers ----------------
