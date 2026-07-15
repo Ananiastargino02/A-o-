@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../ble/ble_service.dart';
 import '../models/dashboard_style.dart';
+import '../models/live_data.dart';
 import '../state/app_settings.dart';
 import '../theme.dart';
+import 'scan_screen.dart';
 import 'dashboards/dash_modern.dart';
 import 'dashboards/dash_cards.dart';
 import 'dashboards/dash_sport.dart';
@@ -20,7 +22,8 @@ class DashboardScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final ble = context.watch<BleService>();
     final estilo = context.watch<AppSettings>().dash;
-    final d = ble.live;
+    // Offline: parametros ao vivo ZERADOS (nao espera conexao pra entrar).
+    final d = ble.conectado ? (ble.live ?? LiveData()) : LiveData();
 
     return Scaffold(
       appBar: AppBar(
@@ -42,17 +45,13 @@ class DashboardScreen extends StatelessWidget {
         ],
       ),
       body: VBackground(
-        child: (d == null && !ble.conectado)
-            ? _semConexao(context, ble)       // desconectado e sem dado -> reconectar
-            : (d == null)
-                ? const Center(child: CircularProgressIndicator(color: VColors.cyan))
-                : switch (estilo) {
-                    DashboardStyle.modern => DashModern(d, ble),
-                    DashboardStyle.cards => DashCards(d, ble),
-                    DashboardStyle.sport => DashSport(d, ble),
-                    DashboardStyle.minimal => DashMinimal(d, ble),
-                    DashboardStyle.cockpit => DashCockpit(d, ble),
-                  },
+        child: switch (estilo) {
+          DashboardStyle.modern => DashModern(d, ble),
+          DashboardStyle.cards => DashCards(d, ble),
+          DashboardStyle.sport => DashSport(d, ble),
+          DashboardStyle.minimal => DashMinimal(d, ble),
+          DashboardStyle.cockpit => DashCockpit(d, ble),
+        },
       ),
     );
   }
@@ -76,39 +75,9 @@ class DashboardScreen extends StatelessWidget {
     }
     return IconButton(
       tooltip: 'Conectar',
-      icon: const Icon(Icons.bluetooth_disabled, color: VColors.textFaint, size: 20),
-      onPressed: () => ble.reconectar(),
-    );
-  }
-
-  Widget _semConexao(BuildContext context, BleService ble) {
-    final reconectando = ble.conn == VConn.procurando || ble.conn == VConn.conectando;
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(28),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(reconectando ? Icons.bluetooth_searching : Icons.bluetooth_disabled,
-                size: 56, color: reconectando ? VColors.amber : VColors.textFaint),
-            const SizedBox(height: 16),
-            Text(reconectando ? 'Reconectando ao VEICAN...' : 'VEICAN desconectado',
-                style: const TextStyle(color: VColors.textHi, fontSize: 18, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 8),
-            const Text('O painel volta sozinho quando o aparelho reaparecer.',
-                textAlign: TextAlign.center, style: TextStyle(color: VColors.textFaint)),
-            const SizedBox(height: 20),
-            if (reconectando)
-              const CircularProgressIndicator(color: VColors.amber)
-            else
-              FilledButton.icon(
-                onPressed: () => ble.reconectar(),
-                icon: const Icon(Icons.bluetooth_searching),
-                label: const Text('CONECTAR'),
-              ),
-          ],
-        ),
-      ),
+      icon: const Icon(Icons.bluetooth_disabled, color: VColors.red, size: 20),
+      onPressed: () => Navigator.push(
+          context, MaterialPageRoute(builder: (_) => const ScanScreen())),
     );
   }
 

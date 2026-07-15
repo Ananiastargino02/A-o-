@@ -16,6 +16,7 @@ class _MaintenanceScreenState extends State<MaintenanceScreen> {
   List<MaintItem> _itens = [];
   List<MaintRecord> _hist = [];
   bool _carregando = true;
+  bool _offline = false;   // mostrando dados guardados (sem conexao)
 
   @override
   void initState() {
@@ -26,9 +27,20 @@ class _MaintenanceScreenState extends State<MaintenanceScreen> {
   Future<void> _recarregar() async {
     setState(() => _carregando = true);
     final ble = context.read<BleService>();
-    final r = await ble.enviar('MANUT LIST');
+    String texto = '';
+    bool offline = false;
+    if (ble.conectado) {
+      texto = await ble.enviar('MANUT LIST');
+      if (texto.trim().isNotEmpty) {
+        await _store.saveManutCache(texto);   // atualiza o cache quando online
+      }
+    }
+    if (texto.trim().isEmpty) {
+      texto = await _store.loadManutCache();   // offline: usa o ultimo guardado
+      offline = true;
+    }
     final itens = <MaintItem>[];
-    for (final linha in r.split('\n')) {
+    for (final linha in texto.split('\n')) {
       final m = MaintItem.parse(linha);
       if (m != null) itens.add(m);
     }
@@ -37,6 +49,7 @@ class _MaintenanceScreenState extends State<MaintenanceScreen> {
     setState(() {
       _itens = itens;
       _hist = hist;
+      _offline = offline && itens.isNotEmpty;
       _carregando = false;
     });
   }
@@ -123,6 +136,36 @@ class _MaintenanceScreenState extends State<MaintenanceScreen> {
           : ListView(
               padding: const EdgeInsets.all(16),
               children: [
+                if (_offline)
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 12),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: VColors.amber.withValues(alpha: 0.14),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: VColors.amber.withValues(alpha: 0.5)),
+                    ),
+                    child: const Row(children: [
+                      Icon(Icons.history, color: VColors.amber, size: 18),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: Text('Dados guardados (sem conexao). Conecte para atualizar.',
+                            style: TextStyle(color: VColors.textHi, fontSize: 12)),
+                      ),
+                    ]),
+                  ),
+                if (_itens.isEmpty)
+                  Container(
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(
+                      color: VColors.card,
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: VColors.line, width: 1.4),
+                    ),
+                    child: const Text(
+                        'Sem dados de manutencao ainda.\nConecte no VEICAN uma vez para carregar e guardar.',
+                        textAlign: TextAlign.center, style: TextStyle(color: VColors.textFaint)),
+                  ),
                 ..._itens.map(_itemCard),
                 const SizedBox(height: 20),
                 Row(

@@ -9,7 +9,19 @@ import 'car_scope.dart';
 class LocalStore {
   static String get _kProfile => CarScope.key('car_profile');
   static String get _kHistory => CarScope.key('maint_history');
+  static String get _kManut => CarScope.key('manut_cache');   // ultima MANUT LIST (offline)
   static const _kLastDevice = 'last_device_id';
+
+  /// Guarda a ultima lista de manutencao (texto cru) p/ ver offline.
+  Future<void> saveManutCache(String raw) async {
+    final p = await SharedPreferences.getInstance();
+    await p.setString(_kManut, raw);
+  }
+
+  Future<String> loadManutCache() async {
+    final p = await SharedPreferences.getInstance();
+    return p.getString(_kManut) ?? '';
+  }
 
   Future<CarProfile> loadProfile() async {
     final p = await SharedPreferences.getInstance();

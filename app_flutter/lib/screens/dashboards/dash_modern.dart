@@ -4,6 +4,7 @@ import '../../models/live_data.dart';
 import '../../theme.dart';
 import '../../widgets/circular_gauge.dart';
 import '../../widgets/rpm_chart.dart';
+import '../../widgets/temp_gauge.dart';
 import '../../widgets/dash_common.dart';
 
 /// Painel MODERNO (padrao): conta-giro grande ao vivo, velocidade em destaque,
@@ -55,22 +56,20 @@ class DashModern extends StatelessWidget {
           _speedCard(context),
           const SizedBox(height: 14),
 
+          // Temperatura: valor em graus + indicador de nivel (igual no carro)
+          TempGauge(d.temp),
+          const SizedBox(height: 12),
+
           // Tiles ao vivo
           Row(
             children: [
-              Expanded(child: _tile(Icons.thermostat, '${d.temp}', '°C', 'TEMPERATURA', corTemp(d.temp))),
-              const SizedBox(width: 12),
               Expanded(child: _tile(Icons.local_gas_station, d.combustivel >= 0 ? '${d.combustivel}' : '--', '%', 'COMBUSTIVEL', corComb(d.combustivel))),
+              const SizedBox(width: 12),
+              Expanded(child: _tile(d.ligado ? Icons.bolt : Icons.battery_full, d.bateria.toStringAsFixed(1), 'V', d.ligado ? 'ALTERNADOR' : 'BATERIA', corBateria(d))),
             ],
           ),
           const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(child: _tile(d.ligado ? Icons.bolt : Icons.battery_full, d.bateria.toStringAsFixed(1), 'V', d.ligado ? 'ALTERNADOR' : 'BATERIA', corBateria(d))),
-              const SizedBox(width: 12),
-              Expanded(child: _tile(Icons.route, '${d.km}', 'km', 'ODOMETRO', VColors.violet)),
-            ],
-          ),
+          _tile(Icons.route, '${d.km}', 'km', 'ODOMETRO', VColors.violet),
           const SizedBox(height: 16),
 
           // RPM ao vivo (grafico)

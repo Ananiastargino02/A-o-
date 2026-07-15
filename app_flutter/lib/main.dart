@@ -6,7 +6,6 @@ import 'state/app_settings.dart';
 import 'storage/car_scope.dart';
 import 'fleet/fleet_service.dart';
 import 'models/fleet_vehicle.dart';
-import 'screens/scan_screen.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/maintenance_screen.dart';
 import 'screens/repairs_screen.dart';
@@ -46,12 +45,11 @@ class _Gate extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final ble = context.watch<BleService>();
-    // Depois que o usuario ja escolheu um VEICAN (aparelho salvo), fica SEMPRE no
-    // painel — mesmo desconectado — e reconecta sozinho. (9) A tela de scan so
-    // aparece na primeira vez, quando ainda nao ha aparelho escolhido.
-    if (ble.conectado || ble.temDispositivoSalvo) return const HomeShell();
-    return const ScanScreen();
+    // Entra SEMPRE direto no app (nao espera conectar). Offline mostra tudo o que
+    // esta guardado (manutencao, carro, historico); os parametros ao vivo (RPM,
+    // velocidade, temp) vem zerados ate conectar. A conexao e feita por um botao
+    // dentro do painel.
+    return const HomeShell();
   }
 }
 
