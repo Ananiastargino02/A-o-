@@ -2406,11 +2406,17 @@ void taskCAN(void* param) {
               //  - sem salto brusco (>30C entre leituras: agua nao muda tao rapido)
               //  - com motor LIGADO (rpm>400) a agua nunca fica < 10C
               int tc = d8[0] - kline_temp_off;   // offset calibravel (KTEMPOFF); padrao 40
-              static int temp_bom = -1000;
-              bool sao      = (tc >= -30 && tc <= 135);
-              bool semSalto = (temp_bom <= -1000) || (abs(tc - temp_bom) <= 30);
-              bool lixoFrio = (ultimo.rpm > 400 && tc < 10);
-              if (sao && semSalto && !lixoFrio) { ultimo.temp_motor = tc; temp_bom = tc; }
+              static int temp_bom = -1000, pend = 0, pendN = 0;
+              if (tc >= -40 && tc <= 140) {                 // faixa fisicamente possivel
+                if (temp_bom <= -1000 || abs(tc - temp_bom) <= 25) {
+                  ultimo.temp_motor = tc; temp_bom = tc; pendN = 0;   // variacao normal: aceita ja
+                } else {
+                  // salto grande: so aceita se PERSISTIR (3 leituras parecidas). Isso mata o
+                  // pico-lixo isolado, mas segue mudanca real (recalibracao, sensor reconectado).
+                  if (pendN > 0 && abs(tc - pend) <= 8) pendN++; else { pend = tc; pendN = 1; }
+                  if (pendN >= 3) { ultimo.temp_motor = tc; temp_bom = tc; pendN = 0; }
+                }
+              }
             }
             else if (pid == 0x0D)           ultimo.velocidade = d8[0];
           }
