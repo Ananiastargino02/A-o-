@@ -38,22 +38,76 @@ class DashboardScreen extends StatelessWidget {
             onPressed: () => Navigator.push(context,
                 MaterialPageRoute(builder: (_) => const DashboardPickerScreen())),
           ),
-          IconButton(
-            icon: const Icon(Icons.bluetooth_connected, color: VColors.green, size: 20),
-            onPressed: () => _confirmarDesconectar(context, ble),
-          ),
+          _botaoConexao(context, ble),   // (10) conectar/desconectar dentro do painel
         ],
       ),
       body: VBackground(
-        child: d == null
-            ? const Center(child: CircularProgressIndicator(color: VColors.cyan))
-            : switch (estilo) {
-                DashboardStyle.modern => DashModern(d, ble),
-                DashboardStyle.cards => DashCards(d, ble),
-                DashboardStyle.sport => DashSport(d, ble),
-                DashboardStyle.minimal => DashMinimal(d, ble),
-                DashboardStyle.cockpit => DashCockpit(d, ble),
-              },
+        child: (d == null && !ble.conectado)
+            ? _semConexao(context, ble)       // desconectado e sem dado -> reconectar
+            : (d == null)
+                ? const Center(child: CircularProgressIndicator(color: VColors.cyan))
+                : switch (estilo) {
+                    DashboardStyle.modern => DashModern(d, ble),
+                    DashboardStyle.cards => DashCards(d, ble),
+                    DashboardStyle.sport => DashSport(d, ble),
+                    DashboardStyle.minimal => DashMinimal(d, ble),
+                    DashboardStyle.cockpit => DashCockpit(d, ble),
+                  },
+      ),
+    );
+  }
+
+  /// Botao de conexao no painel: reflete o estado (verde=conectado,
+  /// girando=reconectando, cinza=desconectado). (10)
+  Widget _botaoConexao(BuildContext context, BleService ble) {
+    if (ble.conectado) {
+      return IconButton(
+        tooltip: 'Desconectar',
+        icon: const Icon(Icons.bluetooth_connected, color: VColors.green, size: 20),
+        onPressed: () => _confirmarDesconectar(context, ble),
+      );
+    }
+    if (ble.conn == VConn.procurando || ble.conn == VConn.conectando) {
+      return const Padding(
+        padding: EdgeInsets.all(14),
+        child: SizedBox(
+            width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: VColors.amber)),
+      );
+    }
+    return IconButton(
+      tooltip: 'Conectar',
+      icon: const Icon(Icons.bluetooth_disabled, color: VColors.textFaint, size: 20),
+      onPressed: () => ble.reconectar(),
+    );
+  }
+
+  Widget _semConexao(BuildContext context, BleService ble) {
+    final reconectando = ble.conn == VConn.procurando || ble.conn == VConn.conectando;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(reconectando ? Icons.bluetooth_searching : Icons.bluetooth_disabled,
+                size: 56, color: reconectando ? VColors.amber : VColors.textFaint),
+            const SizedBox(height: 16),
+            Text(reconectando ? 'Reconectando ao VEICAN...' : 'VEICAN desconectado',
+                style: const TextStyle(color: VColors.textHi, fontSize: 18, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 8),
+            const Text('O painel volta sozinho quando o aparelho reaparecer.',
+                textAlign: TextAlign.center, style: TextStyle(color: VColors.textFaint)),
+            const SizedBox(height: 20),
+            if (reconectando)
+              const CircularProgressIndicator(color: VColors.amber)
+            else
+              FilledButton.icon(
+                onPressed: () => ble.reconectar(),
+                icon: const Icon(Icons.bluetooth_searching),
+                label: const Text('CONECTAR'),
+              ),
+          ],
+        ),
       ),
     );
   }

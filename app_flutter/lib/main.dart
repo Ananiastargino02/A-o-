@@ -26,7 +26,7 @@ class VeicanApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
-        ChangeNotifierProvider(create: (_) => BleService()),
+        ChangeNotifierProvider(create: (_) => BleService()..iniciar()),
         ChangeNotifierProvider(create: (_) => AppSettings()),
         ChangeNotifierProvider(create: (_) => FleetService()..init()),
       ],
@@ -47,7 +47,10 @@ class _Gate extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final ble = context.watch<BleService>();
-    if (ble.conn == VConn.conectado) return const HomeShell();
+    // Depois que o usuario ja escolheu um VEICAN (aparelho salvo), fica SEMPRE no
+    // painel — mesmo desconectado — e reconecta sozinho. (9) A tela de scan so
+    // aparece na primeira vez, quando ainda nao ha aparelho escolhido.
+    if (ble.conectado || ble.temDispositivoSalvo) return const HomeShell();
     return const ScanScreen();
   }
 }

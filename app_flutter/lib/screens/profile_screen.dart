@@ -148,16 +148,36 @@ class _ProfileScreenState extends State<ProfileScreen> {
             child: Column(
               children: [
                 ListTile(
-                  leading: const Icon(Icons.bluetooth_connected, color: VColors.green),
-                  title: const Text('VEICAN conectado'),
+                  leading: Icon(ble.conectado ? Icons.bluetooth_connected : Icons.bluetooth_disabled,
+                      color: ble.conectado ? VColors.green : VColors.textFaint),
+                  title: Text(ble.conectado
+                      ? 'VEICAN conectado'
+                      : (ble.conn == VConn.procurando || ble.conn == VConn.conectando)
+                          ? 'Reconectando...'
+                          : 'VEICAN desconectado'),
                   subtitle: Text('Odometro: ${ble.live?.km ?? "--"} km',
                       style: const TextStyle(color: VColors.textFaint)),
                 ),
                 const Divider(height: 1, color: VColors.line),
+                if (ble.conectado)
+                  ListTile(
+                    leading: const Icon(Icons.link_off, color: VColors.amber),
+                    title: const Text('Desconectar'),
+                    onTap: () => ble.desconectar(),
+                  )
+                else
+                  ListTile(
+                    leading: const Icon(Icons.bluetooth_searching, color: VColors.cyan),
+                    title: const Text('Conectar'),
+                    onTap: () => ble.reconectar(),
+                  ),
+                const Divider(height: 1, color: VColors.line),
                 ListTile(
-                  leading: const Icon(Icons.link_off, color: VColors.red),
-                  title: const Text('Desconectar'),
-                  onTap: () => ble.desconectar(),
+                  leading: const Icon(Icons.sync_alt, color: VColors.red),
+                  title: const Text('Trocar aparelho'),
+                  subtitle: const Text('Esquece este VEICAN e procura outro',
+                      style: TextStyle(color: VColors.textFaint)),
+                  onTap: () => ble.esquecerDispositivo(),
                 ),
               ],
             ),

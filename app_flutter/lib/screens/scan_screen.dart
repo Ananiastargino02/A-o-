@@ -36,6 +36,27 @@ class ScanScreen extends StatelessWidget {
                   textAlign: TextAlign.center,
                   style: TextStyle(color: VColors.textDim, letterSpacing: 1)),
               const Spacer(),
+              // Lista de VEICANs encontrados (quando ha mais de um, o usuario escolhe)
+              if (ble.encontrados.isNotEmpty) ...[
+                const Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('SELECIONAR DISPOSITIVO',
+                      style: TextStyle(color: VColors.textDim, letterSpacing: 1.5, fontSize: 12)),
+                ),
+                const SizedBox(height: 8),
+                for (final dev in ble.encontrados)
+                  Card(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    child: ListTile(
+                      leading: const Icon(Icons.memory, color: VColors.cyan),
+                      title: Text(dev.nome, style: const TextStyle(color: VColors.textHi)),
+                      subtitle: Text(dev.id, style: const TextStyle(color: VColors.textFaint, fontSize: 12)),
+                      trailing: const Icon(Icons.chevron_right, color: VColors.textFaint),
+                      onTap: () => ble.conectarA(dev.id),
+                    ),
+                  ),
+                const SizedBox(height: 12),
+              ],
               if (procurando) ...[
                 const Center(child: CircularProgressIndicator(color: VColors.cyan)),
                 const SizedBox(height: 16),
@@ -47,9 +68,9 @@ class ScanScreen extends StatelessWidget {
                     style: const TextStyle(color: VColors.textDim)),
               ] else
                 FilledButton.icon(
-                  onPressed: () => ble.conectar(),
+                  onPressed: () => ble.escanear(),
                   icon: const Icon(Icons.bluetooth_searching),
-                  label: const Text('CONECTAR'),
+                  label: Text(ble.encontrados.isEmpty ? 'CONECTAR' : 'PROCURAR DE NOVO'),
                 ),
               if (ble.erro != null) ...[
                 const SizedBox(height: 20),

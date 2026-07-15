@@ -6,6 +6,7 @@ import '../models/live_data.dart';
 import '../storage/speed_store.dart';
 import '../storage/consumption_store.dart';
 import '../storage/car_scope.dart';
+import '../storage/local_store.dart';
 
 /// UUIDs do Nordic UART Service (NUS) — devem casar com o firmware do VEICAN.
 class VUuids {
@@ -16,6 +17,13 @@ class VUuids {
 }
 
 enum VConn { desconectado, procurando, conectando, conectado }
+
+/// Um VEICAN encontrado no scan (para a lista de escolha).
+class VeicanDevice {
+  final String id; // remoteId (MAC no Android)
+  final String nome;
+  VeicanDevice(this.id, this.nome);
+}
 
 /// Servico central de Bluetooth. Uma unica instancia (Provider) cuida de:
 /// escanear, conectar, mandar comandos e devolver as respostas.
@@ -46,6 +54,15 @@ class BleService extends ChangeNotifier {
   BluetoothCharacteristic? _tx;
   StreamSubscription? _txSub;
   StreamSubscription? _connSub;
+  StreamSubscription? _scanSub;
+
+  final _localStore = LocalStore();
+  final List<VeicanDevice> encontrados = [];   // lista do scan (p/ escolher)
+  String? dispositivoSalvo;                     // ultimo VEICAN escolhido (reconecta nele)
+  bool get temDispositivoSalvo => dispositivoSalvo != null;
+  bool _scanning = false;                       // trava scan concorrente
+  bool _userDesconectou = false;                // desconexao pedida pelo usuario
+  Timer? _reconnectTimer;
 
   // fila de comandos: 1 por vez (o firmware nao processa paralelo)
   final _fila = <_Req>[];
@@ -58,81 +75,128 @@ class BleService extends ChangeNotifier {
 
   // ---------------- Scan + conexao ----------------
 
-  /// Escaneia e conecta no primeiro VEICAN encontrado.
-  Future<void> conectar() async {
+  /// Chamado no boot: carrega o ultimo aparelho e tenta reconectar nele sozinho.
+  Future<void> iniciar() async {
+    final id = await _localStore.lastDeviceId();
+    dispositivoSalvo = (id != null && id.isNotEmpty) ? id : null;
+    notifyListeners();
+    if (dispositivoSalvo != null) _autoReconnect();
+  }
+
+  /// Esquece o aparelho salvo (para instalar/testar em outro VEICAN) e volta pro
+  /// scan. Usa quando troca o aparelho fisico.
+  Future<void> esquecerDispositivo() async {
+    await desconectar();
+    dispositivoSalvo = null;
+    await _localStore.saveLastDeviceId('');
+    encontrados.clear();
+    _userDesconectou = false;
+    _setConn(VConn.desconectado);
+  }
+
+  /// (compat) mantem o nome antigo: escaneia e conecta.
+  Future<void> conectar() => escanear();
+
+  /// Escaneia por VEICAN — casa por UUID do SERVICO (mais confiavel que o nome,
+  /// que o Android as vezes nao recebe) OU por nome. Junta TODOS numa lista.
+  /// Se achar 1 -> conecta direto. Se achar varios -> a tela mostra a lista.
+  Future<void> escanear({Duration timeout = const Duration(seconds: 12)}) async {
+    if (_scanning || FlutterBluePlus.isScanningNow) return;   // (7) nao escaneia duplicado
     erro = null;
+    _userDesconectou = false;
+    encontrados.clear();
     _setConn(VConn.procurando);
     try {
       if (await FlutterBluePlus.isSupported == false) {
         throw 'Bluetooth nao suportado neste aparelho';
       }
-      // liga o adaptador se possivel (Android)
       if (FlutterBluePlus.adapterStateNow != BluetoothAdapterState.on) {
-        try {
-          await FlutterBluePlus.turnOn();
-        } catch (_) {}
+        try { await FlutterBluePlus.turnOn(); } catch (_) {}
       }
-
-      BluetoothDevice? achado;
-      final sub = FlutterBluePlus.scanResults.listen((results) {
+      _scanning = true;
+      _scanSub?.cancel();
+      _scanSub = FlutterBluePlus.scanResults.listen((results) {
         for (final r in results) {
           final advName = r.advertisementData.advName.trim();
           final platformName = r.device.platformName.trim();
           final nome = advName.isNotEmpty ? advName : platformName;
-
-          debugPrint(
-            'BLE encontrado: advName="$advName", '
-            'platformName="$platformName", '
-            'id=${r.device.remoteId}',
-          );
-
-          // casa por "contem" (ignora maiuscula/minuscula) -> robusto a espacos
-          // e a variacoes de nome anunciado entre aparelhos.
-          if (nome.toUpperCase().contains(VUuids.deviceName.toUpperCase())) {
-            achado = r.device;
-          }
+          final porServico =
+              r.advertisementData.serviceUuids.any((u) => u == VUuids.service); // (1)
+          final porNome =
+              nome.toUpperCase().contains(VUuids.deviceName.toUpperCase());
+          if (!porServico && !porNome) continue;
+          final id = r.device.remoteId.str;
+          if (encontrados.any((e) => e.id == id)) continue;
+          encontrados.add(VeicanDevice(id, nome.isEmpty ? 'VEICAN' : nome));
+          notifyListeners();
         }
       });
-
-      // scan aberto + filtro por NOME no listener (mais robusto que withServices,
-      // que alguns aparelhos nao reportam de forma confiavel)
-      await FlutterBluePlus.startScan(timeout: const Duration(seconds: 12));
-      // espera achar (ou o scan terminar)
-      final fim = DateTime.now().add(const Duration(seconds: 12));
-      while (achado == null && DateTime.now().isBefore(fim)) {
-        await Future.delayed(const Duration(milliseconds: 200));
-      }
+      await FlutterBluePlus.startScan(timeout: timeout);
+      await Future.delayed(timeout);
       await FlutterBluePlus.stopScan();
-      await sub.cancel();
+      await _scanSub?.cancel();
+      _scanning = false;
 
-      if (achado == null) {
-        throw 'VEICAN nao encontrado. Ligue o carro e deixe o aparelho perto.';
+      if (encontrados.isEmpty) {
+        erro = 'Nenhum VEICAN encontrado. Ligue o carro e deixe o aparelho perto.';
+        _setConn(VConn.desconectado);
+      } else if (encontrados.length == 1) {
+        await conectarA(encontrados.first.id);          // 1 so -> conecta direto
+      } else {
+        _setConn(VConn.desconectado);                    // varios -> UI mostra a lista
+        notifyListeners();
       }
-      await _conectarDevice(achado!);
     } catch (e) {
+      _scanning = false;
+      await _scanSub?.cancel();
       erro = e.toString();
       _setConn(VConn.desconectado);
     }
   }
 
+  /// Conecta num aparelho especifico (por id), com ATE 3 tentativas e timeout
+  /// maior. Salva o id como "o meu VEICAN" para reconectar nele depois.
+  Future<void> conectarA(String deviceId) async {
+    _userDesconectou = false;
+    _cancelReconnect();
+    erro = null;
+    // se um scan estiver rolando, para antes de conectar
+    if (FlutterBluePlus.isScanningNow) {
+      try { await FlutterBluePlus.stopScan(); } catch (_) {}
+    }
+    await _scanSub?.cancel();
+    _scanning = false;
+    final dev = BluetoothDevice.fromId(deviceId);
+    for (int tentativa = 1; tentativa <= 3; tentativa++) {   // (3)(6) ate 3 tentativas
+      try {
+        _setConn(VConn.conectando);
+        await _conectarDevice(dev);
+        dispositivoSalvo = deviceId;
+        await _localStore.saveLastDeviceId(deviceId);        // (5) guarda o aparelho
+        return;
+      } catch (e) {
+        erro = 'Tentativa $tentativa: $e';
+        notifyListeners();
+        try { await dev.disconnect(); } catch (_) {}
+        if (tentativa < 3) await Future.delayed(Duration(seconds: 2 * tentativa)); // backoff
+      }
+    }
+    _setConn(VConn.desconectado);
+    if (temDispositivoSalvo) _autoReconnect();               // segue tentando em background (8)
+  }
+
   Future<void> _conectarDevice(BluetoothDevice d) async {
-    _setConn(VConn.conectando);
     _device = d;
     _connSub?.cancel();
     _connSub = d.connectionState.listen((s) {
-      if (s == BluetoothConnectionState.disconnected && conn != VConn.desconectado) {
-        _limpar();
-        _setConn(VConn.desconectado);
-      }
+      if (s == BluetoothConnectionState.disconnected) _onDisconnected();
     });
 
-    await d.connect(timeout: const Duration(seconds: 15), autoConnect: false);
-    // MTU maior ajuda respostas grandes (Android)
-    try {
-      await d.requestMtu(200);
-    } catch (_) {}
+    await d.connect(timeout: const Duration(seconds: 25), autoConnect: false); // (2) tempo maior
+    try { await d.requestMtu(200); } catch (_) {}
 
     final servicos = await d.discoverServices();
+    _rx = null; _tx = null;
     for (final s in servicos) {
       if (s.uuid == VUuids.service) {
         for (final c in s.characteristics) {
@@ -142,17 +206,57 @@ class BleService extends ChangeNotifier {
       }
     }
     if (_rx == null || _tx == null) {
-      await d.disconnect();
+      try { await d.disconnect(); } catch (_) {}
       throw 'Servico do VEICAN nao encontrado';
     }
 
     await _tx!.setNotifyValue(true);
+    _txSub?.cancel();
     _txSub = _tx!.onValueReceived.listen(_onDados);
 
     _setConn(VConn.conectado);
-    await _syncSpeedDevice();   // puxa o historico gravado no aparelho
+    await _syncSpeedDevice();
     await _carregarRecordes();
     _startPolling();
+  }
+
+  /// Caiu a conexao. Se NAO foi o usuario, mantem o painel com o ultimo dado e
+  /// tenta reconectar sozinho no aparelho salvo. (4)(7)(8)
+  void _onDisconnected() {
+    _stopPolling();
+    _txSub?.cancel();
+    _rx = null;
+    _tx = null;
+    if (_userDesconectou) {
+      _setConn(VConn.desconectado);
+    } else {
+      _setConn(VConn.procurando);   // "reconectando" — nao limpa a live
+      if (temDispositivoSalvo) _autoReconnect();
+    }
+  }
+
+  // Reconexao automatica: de tempos em tempos tenta o aparelho salvo. (8)
+  void _autoReconnect() {
+    if (_reconnectTimer != null) return;
+    _reconnectTimer = Timer.periodic(const Duration(seconds: 6), (_) async {
+      if (conectado || _userDesconectou || dispositivoSalvo == null) {
+        _cancelReconnect();
+        return;
+      }
+      if (_scanning || FlutterBluePlus.isScanningNow) return; // (7) sem scan concorrente
+      try {
+        _setConn(VConn.conectando);
+        await _conectarDevice(BluetoothDevice.fromId(dispositivoSalvo!));
+        _cancelReconnect();
+      } catch (_) {
+        _setConn(VConn.procurando);   // tenta de novo no proximo tick
+      }
+    });
+  }
+
+  void _cancelReconnect() {
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
   }
 
   /// Ao conectar, puxa o historico de velocidade do aparelho (SPEEDHIST) e junta
@@ -193,19 +297,44 @@ class BleService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Desconexao PEDIDA pelo usuario: para de reconectar e mantem o ultimo dado
+  /// no painel (nao volta pra tela de scan). (9)
   Future<void> desconectar() async {
+    _userDesconectou = true;
+    _cancelReconnect();
     final d = _device;
-    _limpar();
-    _setConn(VConn.desconectado);
+    _stopPolling();
+    _txSub?.cancel();
+    _connSub?.cancel();
+    _respTimer?.cancel();
+    for (final r in _fila) {
+      if (!r.completer.isCompleted) r.completer.complete('');
+    }
+    _fila.clear();
+    if (_atual != null && !_atual!.completer.isCompleted) _atual!.completer.complete('');
+    _atual = null;
+    _rx = null;
+    _tx = null;
+    _setConn(VConn.desconectado);   // 'live' fica preservada de proposito
     if (d != null) {
-      try {
-        await d.disconnect();
-      } catch (_) {}
+      try { await d.disconnect(); } catch (_) {}
+    }
+  }
+
+  /// Reconecta manualmente (botao no painel): usa o aparelho salvo, senao escaneia.
+  Future<void> reconectar() async {
+    _userDesconectou = false;
+    if (temDispositivoSalvo) {
+      await conectarA(dispositivoSalvo!);
+    } else {
+      await escanear();
     }
   }
 
   void _limpar() {
     _stopPolling();
+    _cancelReconnect();
+    _scanSub?.cancel();
     _txSub?.cancel();
     _connSub?.cancel();
     _respTimer?.cancel();
