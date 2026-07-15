@@ -2721,7 +2721,12 @@ void taskLogger(void* param) {
       if (!alto_rpm_ativo) { inicio_alto_rpm = agora; alto_rpm_ativo = true; }
       else if (!gravou && agora - inicio_alto_rpm > 2000) { gravarRegistro(3); alto_rpm_ativo = false; gravou = true; }
     } else { alto_rpm_ativo = false; }
-    if (!gravou && tps_anterior >= 0 && d.tps - tps_anterior > 50) { gravarRegistro(4); gravou = true; }
+    if (!gravou && tps_anterior >= 0 && d.tps - tps_anterior > 50) {
+      // intervalo minimo: dirigindo na cidade o TPS pula direto -> gravava na
+      // EEPROM sem parar (I2C martelado + desgaste). Agora no maximo 1x/5s.
+      static uint32_t ult_tps = 0;
+      if (agora - ult_tps > 5000) { gravarRegistro(4); ult_tps = agora; gravou = true; }
+    }
     if (!gravou && d.tensao > 0 && d.tensao < 12.0) {
       static uint32_t ult_alerta = 0;
       if (agora - ult_alerta > 60000) { gravarRegistro(5); ult_alerta = agora; gravou = true; }
