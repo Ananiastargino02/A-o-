@@ -1710,6 +1710,8 @@ uint8_t kline_kb1 = 0, kline_kb2 = 0;
 uint8_t kline_ecu = 0x11;   // endereco do ECU (capturado no init)
 uint8_t kline_tgt = 0x33;   // alvo do pedido (descoberto no diagnostico)
 uint8_t kline_fmt = 0;      // 0 = "Cx tgt src.." ; 1 = "80 tgt src len.." ; 2 = ISO9141
+int kline_temp_off = 40;    // offset da temperatura K-line: tempC = A - off. Padrao SAE = 40.
+                            // Alguns ECUs (ex.: certos VW/Gol) mandam A puro -> use 0 (comando KTEMPOFF).
 // ---- Montana / GM: le TODO o dado do motor num bloco unico (servico 0x21 LID 0x01) ----
 // Descoberto por engenharia reversa (comando GMLIVE) na Montana 2010. mode01 nao tem RPM/temp.
 volatile bool kline_gm = false;   // fonte = bloco GM 0x21 LID 01 (offsets abaixo)
@@ -2403,7 +2405,7 @@ void taskCAN(void* param) {
               //  - faixa sã (-30..135C)
               //  - sem salto brusco (>30C entre leituras: agua nao muda tao rapido)
               //  - com motor LIGADO (rpm>400) a agua nunca fica < 10C
-              int tc = d8[0] - 40;
+              int tc = d8[0] - kline_temp_off;   // offset calibravel (KTEMPOFF); padrao 40
               static int temp_bom = -1000;
               bool sao      = (tc >= -30 && tc <= 135);
               bool semSalto = (temp_bom <= -1000) || (abs(tc - temp_bom) <= 30);
@@ -4099,6 +4101,19 @@ void cockpitEstiloSalvar() {
   speedPrefs.end();
 }
 
+// Offset da temperatura K-line (persistido: o aparelho fica num carro so).
+void klineTempOffCarregar() {
+  speedPrefs.begin("veican", true);
+  kline_temp_off = speedPrefs.getInt("ktoff", 40);
+  speedPrefs.end();
+  if (kline_temp_off < -60 || kline_temp_off > 100) kline_temp_off = 40;
+}
+void klineTempOffSalvar() {
+  speedPrefs.begin("veican", false);
+  speedPrefs.putInt("ktoff", kline_temp_off);
+  speedPrefs.end();
+}
+
 void speedFlush() {
   if (!speedDirty) return;
   if (millis() - speedUltFlush < 5000) return;   // pouca escrita na flash
@@ -4385,6 +4400,7 @@ void setup() {
 
   speedCarregar();   // historico de velocidade (NVS)
   cockpitEstiloCarregar();   // estilo do painel escolhido
+  klineTempOffCarregar();    // calibracao do offset de temperatura K-line
 
   Serial.printf("[HEAP] antes do BLE = %u bytes\n", ESP.getFreeHeap());
   initBLE();
@@ -4698,6 +4714,11 @@ void taskSerial(void* param) {
         else if (buf == "SPEEDHIST") Serial.print(speedHistString());
         else if (buf == "TEMPSCAN") { probe_temp_scan = true; Serial.println(">>> procurando o PID de temperatura..."); }
         else if (buf == "KLRAW") { probe_klraw = true; Serial.println(">>> dump cru da temperatura K-line..."); }
+        else if (buf.startsWith("KTEMPOFF")) {   // calibra offset temp K-line: "KTEMPOFF 0" (VW puro) ou "KTEMPOFF 40" (padrao)
+          const char* s = buf.c_str() + 8; while (*s == ' ') s++;
+          if (*s) { int v = atoi(s); if (v < -60) v = -60; if (v > 100) v = 100; kline_temp_off = v; klineTempOffSalvar(); Serial.printf(">>> temp K-line = A - %d\n", kline_temp_off); }
+          else Serial.printf(">>> offset atual = %d (use: KTEMPOFF 0  ou  KTEMPOFF 40)\n", kline_temp_off);
+        }
         else if (buf == "CANDUMP") { probe_candump = true; Serial.println(">>> capturando frames do barramento..."); }
         else if (buf == "FUELWATCH") { probe_fuelwatch = true; Serial.println(">>> observando candidatos de combustivel..."); }
         else if (buf.startsWith("HYFUEL ")) {   // ajusta o combustivel broadcast Hyundai: HYFUEL <id_hex> <byte> <max>
