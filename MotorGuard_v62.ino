@@ -2775,7 +2775,7 @@ void taskAlertas(void* param) {
       }
     } else { bat_baixa_desde = 0; if (alerta_bateria_ativo) alerta_bateria_ativo = false; }
     // CORRECAO C: sobrecarga do alternador a partir de 14.5V (era 15.0V)
-    if (ligado && d.tensao > 0 && (d.tensao <= 13.0f || d.tensao > 14.5f)) {
+    if (ligado && d.tensao > 0 && (d.tensao < 12.4f || d.tensao > 14.5f)) {   // alerta so ABAIXO de 12.4V
       if (alt_ruim_desde == 0) alt_ruim_desde = agora;
       else if (agora - alt_ruim_desde > 10000) {
         if (!alerta_alternador_ativo) { alerta_alternador_ativo = true; debugLog(1, "ALT RUIM", (uint16_t)(d.tensao*10)); }
@@ -3443,7 +3443,7 @@ void atualizarCockpit(DadosCarro &d) {
     {
       static uint32_t t_alt = 0, t_sob = 0, t_bat = 0;
       uint32_t agora = millis();
-      bool c_alt = ligado && d.tensao > 0 && d.tensao <= 13.0f;
+      bool c_alt = ligado && d.tensao > 0 && d.tensao < 12.4f;   // alerta so ABAIXO de 12.4V
       // CORRECAO C: SOBRECARGA com tensao ACIMA de 14.5V (era 15.0V)
       bool c_sob = ligado && d.tensao > 14.5f;
       bool c_bat = !ligado && d.tensao > 0 && d.tensao <= 12.0f;
