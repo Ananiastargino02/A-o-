@@ -4475,7 +4475,14 @@ void taskSerial(void* param);
 void taskBotoes(void* param);
 
 void setup() {
+  // Serial NAO-BLOQUEANTE: sem o cabo USB (andando na energia do OBD), o chip
+  // conversor fica sem energia e nao escoa o TX -> o buffer enche e qualquer
+  // Serial.print() TRAVAVA a tarefa (tela/botoes) -> watchdog reiniciava.
+  // Com timeout 0, o print e descartado em vez de travar. (Era a causa do reboot
+  // "so andando".) setTxBufferSize ANTES do begin; setTxTimeoutMs DEPOIS.
+  Serial.setTxBufferSize(1024);
   Serial.begin(115200);
+  Serial.setTxTimeoutMs(0);
   delay(500);
   analogSetPinAttenuation(PIN_VBAT, ADC_11db);
   esp_reset_reason_t reset_reason = esp_reset_reason();
