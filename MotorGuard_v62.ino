@@ -221,6 +221,11 @@ enum EstadoEnergia { OPERANDO, STANDBY };
 volatile EstadoEnergia estadoAtual = OPERANDO;
 volatile bool pedido_acordar = false;   // setado pela taskBotoes quando MENU e apertado em standby
 volatile uint32_t hb_tela = 0, hb_botoes = 0;  // "batimentos" p/ watchdog de software
+// Marcadores que SOBREVIVEM ao reboot (RTC mem): guardam por que o watchdog
+// reiniciou (qual tarefa travou), p/ ver no DEBUG depois — sem notebook no carro.
+RTC_DATA_ATTR uint32_t g_wdt_tela = 0;
+RTC_DATA_ATTR uint32_t g_wdt_btn  = 0;
+uint32_t reboot_wdt_tela = 0, reboot_wdt_btn = 0;  // copia p/ gravar na EEPROM apos o I2C subir
 
 volatile bool alerta_bateria_ativo = false;
 volatile bool alerta_alternador_ativo = false;
@@ -4366,6 +4371,11 @@ void setup() {
   Serial.println("\n=== VEICAN v6.3 LVGL ===");
   const char* reset_str[] = {"UNKNOWN","POWERON","EXT","SW","PANIC","INT_WDT","TASK_WDT","WDT","DEEPSLEEP","BROWNOUT","SDIO"};
   Serial.printf("[Boot] reset_reason=%s wake=%d\n", (reset_reason < 11) ? reset_str[reset_reason] : "?", wake_cause);
+  if (g_wdt_tela || g_wdt_btn) {
+    Serial.printf("[Boot] >>> reboot anterior foi WATCHDOG: tela travou %lums, botoes %lums\n", g_wdt_tela, g_wdt_btn);
+    reboot_wdt_tela = g_wdt_tela; reboot_wdt_btn = g_wdt_btn;   // p/ logar na EEPROM depois que o I2C subir
+    g_wdt_tela = 0; g_wdt_btn = 0;
+  }
 
   mutex_dados = xSemaphoreCreateMutex();
   mutex_hora = xSemaphoreCreateMutex();
@@ -4392,6 +4402,8 @@ void setup() {
   else Serial.printf("[Debug] log carregado: %u registros\n", debug_log_count);
 
   debugLog(3, "BOOT", (uint16_t)reset_reason, (uint16_t)wake_cause, (uint8_t)reset_reason);
+  if (reboot_wdt_tela || reboot_wdt_btn)
+    debugLog(2, "WDT reboot", (uint16_t)reboot_wdt_tela, (uint16_t)reboot_wdt_btn);
 
   if (!carregarHeader()) { Serial.println("[Logger] EEPROM virgem/versao mudou, formatando..."); formatarEEPROM(); }
   else Serial.printf("[Logger] count=%u total=%lu\n", log_count, log_total);
@@ -4471,6 +4483,8 @@ void loop() {
     if ((agora - hb_tela > 12000) || (agora - hb_botoes > 12000)) {
       Serial.printf("[WDT] travou (tela=%lums btn=%lums) -> reiniciando\n",
                     agora - hb_tela, agora - hb_botoes);
+      g_wdt_tela = agora - hb_tela;   // guarda p/ ler no proximo boot (DEBUG)
+      g_wdt_btn  = agora - hb_botoes;
       delay(50);
       ESP.restart();
     }
