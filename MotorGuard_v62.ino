@@ -53,6 +53,11 @@
 #include <NimBLEDevice.h>
 #include <Preferences.h>   // NVS interna do ESP32 (historico de velocidade)
 
+// Declaracoes antecipadas de structs usadas em assinaturas de funcao. O Arduino
+// gera os prototipos logo apos os #include (antes da definicao real), entao sem
+// isto da "'OdoSlot' has not been declared" ao compilar.
+struct OdoSlot;
+
 // (fontes agora sao do LVGL: montserrat 14/28/40)
 
 // ============================================================
