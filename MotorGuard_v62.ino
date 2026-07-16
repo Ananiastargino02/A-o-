@@ -281,6 +281,18 @@ volatile bool     fuel_2f_declarado = false;   // o carro declara o PID 0x2F no 
 uint32_t hy_fuel_id   = 0x329;
 uint8_t  hy_fuel_byte = 1;
 uint16_t hy_fuel_max  = 200;   // escala p/ CASAR com o ponteiro do carro (180 -> 90%, = 8/9). Ajuste com HYFUEL.
+bool     fuel_custom  = false; // usuario configurou HYFUEL manualmente (tenta esse antes da tabela)
+
+// TABELA UNIVERSAL de combustivel por broadcast (carros ja descobertos). O
+// aparelho tenta cada um automaticamente -> plug-and-play, sem comando manual.
+// Para adicionar um carro novo: descubra com CANDUMP e inclua aqui (ou use HYFUEL
+// uma vez, que fica salvo).
+struct FuelBroadcast { uint32_t id; uint8_t byte; uint16_t max; const char* nome; };
+static const FuelBroadcast FUEL_TABLE[] = {
+  {0x13A, 0, 255, "Honda"},          // Honda Civic 2010 (frame 0x13A byte 0)
+  {0x329, 1, 200, "Hyundai/Azera"},  // Azera 2010 (frame 0x329 byte 1)
+};
+static const int FUEL_TABLE_N = sizeof(FUEL_TABLE) / sizeof(FUEL_TABLE[0]);
 
 volatile uint16_t debug_log_head = 0;
 volatile uint16_t debug_log_count = 0;
@@ -1591,14 +1603,28 @@ void detectarMetodoCombustivel() {
       return;
     }
   }
-  // Hyundai/Kia: combustivel num frame de broadcast (Azera 0x329 byte1). Se o carro
-  // transmite esse frame, usa por ai (passivo, sem request).
-  int hb = lerFrameByte(hy_fuel_id, hy_fuel_byte, 600);
-  if (hb >= 0) {
-    fuel_metodo = 4;
-    Serial.printf("[Fuel] metodo = broadcast Hyundai (ID %lX byte %d /%d) = %d%%\n",
-                  (unsigned long)hy_fuel_id, hy_fuel_byte, hy_fuel_max, (hb * 100) / hy_fuel_max);
-    return;
+  // Combustivel por BROADCAST (frame proprio do carro). AUTO-DETECTA:
+  // 1) se o usuario salvou um custom (HYFUEL), tenta esse primeiro (calibrado);
+  // 2) senao, varre a TABELA de carros conhecidos (Honda, Azera, ...) e usa o
+  //    primeiro frame que existir -> plug-and-play, sem comando manual.
+  if (fuel_custom) {
+    int hb = lerFrameByte(hy_fuel_id, hy_fuel_byte, 500);
+    if (hb >= 0) {
+      fuel_metodo = 4;
+      Serial.printf("[Fuel] metodo = broadcast SALVO (ID %lX byte %d /%d) = %d%%\n",
+                    (unsigned long)hy_fuel_id, hy_fuel_byte, hy_fuel_max, (hb * 100) / hy_fuel_max);
+      return;
+    }
+  }
+  for (int i = 0; i < FUEL_TABLE_N; i++) {
+    int hb = lerFrameByte(FUEL_TABLE[i].id, FUEL_TABLE[i].byte, 400);
+    if (hb >= 0) {
+      hy_fuel_id = FUEL_TABLE[i].id; hy_fuel_byte = FUEL_TABLE[i].byte; hy_fuel_max = FUEL_TABLE[i].max;
+      fuel_metodo = 4;
+      Serial.printf("[Fuel] metodo = broadcast %s (ID %lX byte %d /%d) = %d%%\n",
+                    FUEL_TABLE[i].nome, (unsigned long)hy_fuel_id, hy_fuel_byte, hy_fuel_max, (hb * 100) / hy_fuel_max);
+      return;
+    }
   }
   fuel_metodo = 3;
   Serial.println("[Fuel] metodo = indisponivel");
@@ -2425,7 +2451,21 @@ void taskCAN(void* param) {
               //  - faixa sã (-30..135C)
               //  - sem salto brusco (>30C entre leituras: agua nao muda tao rapido)
               //  - com motor LIGADO (rpm>400) a agua nunca fica < 10C
-              int tc = d8[0] - kline_temp_off;   // offset calibravel (KTEMPOFF); padrao 40
+              // AUTO-DETECTA o offset (Gol/VW mandam raw=C, sem o -40). Se com o
+              // motor ligado o valor atual ficar fisicamente impossivel, alterna
+              // 40<->0 (3 leituras p/ confirmar, evita flip por glitch). Plug-and-play.
+              if (ultimo.rpm > 400) {
+                static int auto_n = 0;
+                int cur = d8[0] - kline_temp_off;
+                if (cur < -15 || cur > 135) {
+                  if (++auto_n >= 3) {
+                    kline_temp_off = (kline_temp_off == 40) ? 0 : 40;
+                    auto_n = 0;
+                    Serial.printf("[TEMP] auto-offset K-line -> A - %d\n", kline_temp_off);
+                  }
+                } else auto_n = 0;
+              }
+              int tc = d8[0] - kline_temp_off;   // offset auto/calibravel (KTEMPOFF); padrao 40
               static int temp_bom = -1000, pend = 0, pendN = 0;
               if (tc >= -40 && tc <= 140) {                 // faixa fisicamente possivel
                 if (temp_bom <= -1000 || abs(tc - temp_bom) <= 25) {
@@ -4259,6 +4299,7 @@ void klineTempOffSalvar() {
 // carro so. Ex.: Honda Civic = ID 0x13A, byte 0, max 255.
 void fuelCfgCarregar() {
   speedPrefs.begin("veican", true);
+  fuel_custom  = speedPrefs.getBool("fcust", false);   // so usa o salvo se o usuario configurou
   hy_fuel_id   = speedPrefs.getUInt("fid", hy_fuel_id);
   hy_fuel_byte = speedPrefs.getUChar("fbyte", hy_fuel_byte);
   hy_fuel_max  = speedPrefs.getUShort("fmax", hy_fuel_max);
@@ -4268,6 +4309,7 @@ void fuelCfgCarregar() {
 }
 void fuelCfgSalvar() {
   speedPrefs.begin("veican", false);
+  speedPrefs.putBool("fcust", fuel_custom);
   speedPrefs.putUInt("fid", hy_fuel_id);
   speedPrefs.putUChar("fbyte", hy_fuel_byte);
   speedPrefs.putUShort("fmax", hy_fuel_max);
@@ -4910,6 +4952,7 @@ void taskSerial(void* param) {
           if (hy_fuel_byte > 7) hy_fuel_byte = 7;                    // #14: byte 0..7
           if (hy_fuel_max < 1) hy_fuel_max = 1;                      // #14: evita divisao por zero
           fuel_metodo = 0;   // forca redeteccao com os novos parametros
+          fuel_custom = true;   // marca como custom -> tentado antes da tabela
           fuelCfgSalvar();   // PERSISTE (o aparelho fica nesse carro)
           Serial.printf(">>> HYFUEL id=%lX byte=%d max=%d (salvo, redetectando)\n", (unsigned long)hy_fuel_id, hy_fuel_byte, hy_fuel_max);
         }
