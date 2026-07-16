@@ -6,6 +6,7 @@ import '../models/live_data.dart';
 import '../state/app_settings.dart';
 import '../theme.dart';
 import 'scan_screen.dart';
+import 'dashboards/dash_cluster.dart';
 import 'dashboards/dash_modern.dart';
 import 'dashboards/dash_cards.dart';
 import 'dashboards/dash_sport.dart';
@@ -46,6 +47,7 @@ class DashboardScreen extends StatelessWidget {
       ),
       body: VBackground(
         child: switch (estilo) {
+          DashboardStyle.cluster => DashCluster(d, ble),
           DashboardStyle.modern => DashModern(d, ble),
           DashboardStyle.cards => DashCards(d, ble),
           DashboardStyle.sport => DashSport(d, ble),
