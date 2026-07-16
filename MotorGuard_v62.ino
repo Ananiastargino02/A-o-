@@ -4255,9 +4255,13 @@ void klineTempOffSalvar() {
   speedPrefs.end();
 }
 
-void speedFlush() {
+// Grava o historico de velocidade na flash (NVS). A gravacao na flash DESLIGA o
+// cache e pode congelar o nucleo 1 por instantes; andando (transito no CAN) isso
+// se agravava e reiniciava. Agora: ANDANDO quase nao grava (throttle 60s); grava
+// mesmo e PARADO (velocidade 0) — momento calmo. Menos escrita = sem freeze.
+void speedFlush(bool parado) {
   if (!speedDirty) return;
-  if (millis() - speedUltFlush < 5000) return;   // pouca escrita na flash
+  if (!parado && millis() - speedUltFlush < 60000) return;   // andando: no maximo 1x/min
   speedPrefs.begin("veican", false);  // rw
   speedPrefs.putInt("sn", speedHistN);
   speedPrefs.putBytes("shist", speedHist, speedHistN * sizeof(SpeedDia));
@@ -4592,7 +4596,7 @@ void loop() {
     velAtual = dados_publicos.velocidade; xSemaphoreGive(mutex_dados);
   }
   if (velAtual > 0) speedRegistrar(velAtual);
-  speedFlush();   // grava na flash so quando mudou (throttle interno)
+  speedFlush(velAtual == 0);   // grava na flash preferencialmente PARADO (nao andando)
 
   if (agora > 20000) {
     if ((agora - hb_tela > 12000) || (agora - hb_botoes > 12000)) {
