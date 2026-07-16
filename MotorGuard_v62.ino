@@ -176,6 +176,7 @@ volatile uint32_t tx_ok = 0, rx_ok = 0, timeouts = 0;
 volatile uint8_t hora_h = 0, hora_m = 0, hora_s = 0;
 volatile uint8_t data_dia = 1, data_mes = 1;
 volatile uint16_t data_ano = 2026;
+volatile uint32_t rtc_unix_cache = 0;   // unixtime em cache (taskRTC) -> tela nao le I2C
 
 volatile uint16_t log_head = 0;
 volatile uint16_t log_count = 0;
@@ -2788,6 +2789,7 @@ void taskRTC(void* param) {
       data_dia = agora.day(); data_mes = agora.month(); data_ano = agora.year();
       xSemaphoreGive(mutex_hora);
     }
+    rtc_unix_cache = agora.unixtime();   // cache p/ a tela nao precisar ler o I2C
     vTaskDelay(pdMS_TO_TICKS(500));
   }
 }
@@ -3414,13 +3416,19 @@ void atualizarCockpit(DadosCarro &d) {
 
   t++;
   if (t % 60 == 0) {
-    DateTime now = rtcNow();
-    if (lblHora) { snprintf(b, sizeof(b), "%02d:%02d", now.hour(), now.minute()); lv_label_set_text(lblHora, b); }
-    if (lblData) { snprintf(b, sizeof(b), "%02d/%02d/%04d", now.day(), now.month(), now.year()); lv_label_set_text(lblData, b); }
+    // usa a hora do CACHE (taskRTC), NAO le o RTC (I2C) aqui. Assim a tela nunca
+    // trava no barramento -> era isso que reiniciava o aparelho andando.
+    uint8_t hh = 0, mm = 0, dd = 1, mo = 1; uint16_t yy = 2026;
+    if (xSemaphoreTake(mutex_hora, pdMS_TO_TICKS(30)) == pdTRUE) {
+      hh = hora_h; mm = hora_m; dd = data_dia; mo = data_mes; yy = data_ano;
+      xSemaphoreGive(mutex_hora);
+    }
+    if (lblHora) { snprintf(b, sizeof(b), "%02d:%02d", hh, mm); lv_label_set_text(lblHora, b); }
+    if (lblData) { snprintf(b, sizeof(b), "%02d/%02d/%04d", dd, mo, yy); lv_label_set_text(lblData, b); }
 
     alertCnt = 0;
     uint32_t km = (km_total_x100 + km_acumulado_x100) / 100;
-    uint32_t ts = now.unixtime();
+    uint32_t ts = rtc_unix_cache;
     if (d.temp_motor > 110) snprintf(alerts[alertCnt++], 20, "TEMP ALTA");
     if (hora_nao_ajustada) snprintf(alerts[alertCnt++], 20, "AJUSTAR HORA");
     // alertas de tensao: condicao tem que persistir alguns segundos para aparecer (evita falso alarme)
