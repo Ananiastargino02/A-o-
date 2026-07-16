@@ -4255,6 +4255,25 @@ void klineTempOffSalvar() {
   speedPrefs.end();
 }
 
+// Config do combustivel broadcast (HYFUEL) — persistida: o aparelho fica num
+// carro so. Ex.: Honda Civic = ID 0x13A, byte 0, max 255.
+void fuelCfgCarregar() {
+  speedPrefs.begin("veican", true);
+  hy_fuel_id   = speedPrefs.getUInt("fid", hy_fuel_id);
+  hy_fuel_byte = speedPrefs.getUChar("fbyte", hy_fuel_byte);
+  hy_fuel_max  = speedPrefs.getUShort("fmax", hy_fuel_max);
+  speedPrefs.end();
+  if (hy_fuel_byte > 7) hy_fuel_byte = 7;
+  if (hy_fuel_max < 1) hy_fuel_max = 1;
+}
+void fuelCfgSalvar() {
+  speedPrefs.begin("veican", false);
+  speedPrefs.putUInt("fid", hy_fuel_id);
+  speedPrefs.putUChar("fbyte", hy_fuel_byte);
+  speedPrefs.putUShort("fmax", hy_fuel_max);
+  speedPrefs.end();
+}
+
 // Grava o historico de velocidade na flash (NVS). A gravacao na flash DESLIGA o
 // cache e pode congelar o nucleo 1 por instantes; andando (transito no CAN) isso
 // se agravava e reiniciava. Agora: ANDANDO quase nao grava (throttle 60s); grava
@@ -4557,6 +4576,7 @@ void setup() {
   speedCarregar();   // historico de velocidade (NVS)
   cockpitEstiloCarregar();   // estilo do painel escolhido
   klineTempOffCarregar();    // calibracao do offset de temperatura K-line
+  fuelCfgCarregar();         // config do combustivel broadcast (HYFUEL) salva
 
   Serial.printf("[HEAP] antes do BLE = %u bytes\n", ESP.getFreeHeap());
   initBLE();
@@ -4890,7 +4910,8 @@ void taskSerial(void* param) {
           if (hy_fuel_byte > 7) hy_fuel_byte = 7;                    // #14: byte 0..7
           if (hy_fuel_max < 1) hy_fuel_max = 1;                      // #14: evita divisao por zero
           fuel_metodo = 0;   // forca redeteccao com os novos parametros
-          Serial.printf(">>> HYFUEL id=%lX byte=%d max=%d (redetectando)\n", (unsigned long)hy_fuel_id, hy_fuel_byte, hy_fuel_max);
+          fuelCfgSalvar();   // PERSISTE (o aparelho fica nesse carro)
+          Serial.printf(">>> HYFUEL id=%lX byte=%d max=%d (salvo, redetectando)\n", (unsigned long)hy_fuel_id, hy_fuel_byte, hy_fuel_max);
         }
         else if (buf.startsWith("PID")) {   // aceita "PID 05" e "PID05"
           const char* s = buf.c_str() + 3; while (*s == ' ') s++;
