@@ -4475,14 +4475,10 @@ void taskSerial(void* param);
 void taskBotoes(void* param);
 
 void setup() {
-  // Serial NAO-BLOQUEANTE: sem o cabo USB (andando na energia do OBD), o chip
-  // conversor fica sem energia e nao escoa o TX -> o buffer enche e qualquer
-  // Serial.print() TRAVAVA a tarefa (tela/botoes) -> watchdog reiniciava.
-  // Com timeout 0, o print e descartado em vez de travar. (Era a causa do reboot
-  // "so andando".) setTxBufferSize ANTES do begin; setTxTimeoutMs DEPOIS.
-  Serial.setTxBufferSize(1024);
+  // Buffer TX maior p/ absorver rajadas de log sem encher (e sem travar a tarefa
+  // que imprime). Combinado com o corte dos logs por ciclo (VERBOSE_CAN=0).
+  Serial.setTxBufferSize(2048);
   Serial.begin(115200);
-  Serial.setTxTimeoutMs(0);
   delay(500);
   analogSetPinAttenuation(PIN_VBAT, ADC_11db);
   esp_reset_reason_t reset_reason = esp_reset_reason();
@@ -4552,7 +4548,7 @@ void setup() {
   xTaskCreatePinnedToCore(taskTela,      "Tela",   20480, NULL, 1, NULL, 1);
   xTaskCreatePinnedToCore(taskRTC,       "RTC",    4096, NULL, 1, NULL, 1);
   xTaskCreatePinnedToCore(taskSerial,    "Serial", 4096, NULL, 1, NULL, 1);
-  xTaskCreatePinnedToCore(taskBotoes,    "Botoes", 4096, NULL, 2, NULL, 1);
+  xTaskCreatePinnedToCore(taskBotoes,    "Botoes", 4096, NULL, 1, NULL, 1);   // prio 1 (era 2): nao afoga tela/loop no nucleo 1
 
   speedCarregar();   // historico de velocidade (NVS)
   cockpitEstiloCarregar();   // estilo do painel escolhido
