@@ -176,6 +176,28 @@ struct DadosCarro {
 DadosCarro dados_publicos;
 SemaphoreHandle_t mutex_dados, mutex_hora, mutex_hodometro, mutex_manut, mutex_debug, mutex_i2c;
 
+// ============================================================
+//  DEBUG TRACE via Serial (para diagnosticar o reboot "so andando")
+//  Ligue em 1 para rastrear no Serial; deixe 0 na versao de venda.
+// ============================================================
+#define DEBUG_TRACE 1
+
+// "migalhas": cada tarefa escreve aqui em que ponto esta. Quando um nucleo
+// congela, o Serial para; a ULTIMA migalha impressa antes do buraco = onde travou.
+volatile const char* g_stage_tela = "boot";   // nucleo 1 (tela/loop)
+volatile const char* g_stage_can  = "boot";   // nucleo 0 (CAN)
+#if DEBUG_TRACE
+  #define STAGE_TELA(s) (g_stage_tela = (s))
+  #define STAGE_CAN(s)  (g_stage_can  = (s))
+  // Cronometra um bloco de gravacao (flash/EEPROM). Se travar, o dur sai gigante.
+  #define TRACE_DUR(nome, bloco) do { uint32_t _t0 = millis(); bloco; uint32_t _d = millis() - _t0; \
+        if (_d >= 8) Serial.printf("[FLASH] %s = %lums\n", nome, _d); } while (0)
+#else
+  #define STAGE_TELA(s)
+  #define STAGE_CAN(s)
+  #define TRACE_DUR(nome, bloco) do { bloco; } while (0)
+#endif
+
 bool pid_suportado[256] = {false};
 volatile uint32_t tx_ok = 0, rx_ok = 0, timeouts = 0;
 volatile uint8_t hora_h = 0, hora_m = 0, hora_s = 0;
@@ -898,7 +920,9 @@ void salvarHodometro() {
   s.crc = somaCRC((uint8_t*)&s, 16);
   // alterna o slot: seq impar -> A, par -> B (o slot antigo fica intacto durante a gravacao)
   uint16_t addr = (odo_seq & 1) ? ODO_SLOT_A : ODO_SLOT_B;
-  if (!eepromWriteBytes(addr, (uint8_t*)&s, sizeof(s))) debugLog(2, "EEPROM odo falhou");   // #9
+  TRACE_DUR("salvarHodometro", {
+    if (!eepromWriteBytes(addr, (uint8_t*)&s, sizeof(s))) debugLog(2, "EEPROM odo falhou");   // #9
+  });
 }
 
 static bool lerSlotOdo(uint16_t addr, OdoSlot &s) {
@@ -2387,6 +2411,7 @@ void taskCAN(void* param) {
   uint32_t ultima_redescoberta = millis();
   static DadosCarro ultimo = {PID_ERRO, PID_ERRO, PID_ERRO, PID_ERRO, PID_ERRO, PID_ERRO, PID_ERRO, PID_ERRO, PID_ERRO, PID_ERRO, PID_ERRO, -1.0};
   for (;;) {
+    STAGE_CAN("topo");
     // ===== STANDBY: so monitora tensao/botao, CAN desligado =====
     if (estadoAtual == STANDBY) { loopStandby(); continue; }
 
@@ -2539,6 +2564,7 @@ void taskCAN(void* param) {
       descobrirPIDs();
     }
     if (fuel_metodo == 0 && contaPIDs() > 0) {
+      STAGE_CAN("detectFuel");
       detectarMetodoCombustivel();
     }
     twai_status_info_t status;
@@ -2562,6 +2588,7 @@ void taskCAN(void* param) {
     static uint8_t temp_src = 0x05;          // fonte de temperatura (0x05 padrao ou 0x67 fallback)
 
     // ===== RPM: le e PUBLICA JA (responsivo — nao espera os PIDs lentos p/ mostrar aceleracao) =====
+    STAGE_CAN("rpm");
     valor = lerPID_int(0x0C, f_rpm);
     if (valor < 0) { vTaskDelay(pdMS_TO_TICKS(12)); valor = lerPID_int(0x0C, f_rpm); }  // 1 retry
     if (valor >= 0) { ultimo.rpm = valor; falhas_rpm = 0; ult_resp_ok = millis(); }
@@ -2578,6 +2605,7 @@ void taskCAN(void* param) {
     vTaskDelay(pdMS_TO_TICKS(12));
 
     // ===== 1 PID LENTO por ciclo, revezando (temp / tensao / combustivel) — mantem o RPM rapido =====
+    STAGE_CAN("pidLento");
     switch (ciclo % 3) {
       case 0:   // temperatura (0x05 padrao; fallback 0x67 byte B p/ HB20 etc.)
         valor = PID_ERRO;
@@ -2857,7 +2885,8 @@ static void checarTravamento() {
   uint32_t dt = agora - hb_tela;
   uint32_t db = agora - hb_botoes;
   if (dt <= 12000 && db <= 12000) return;     // tudo vivo
-  Serial.printf("[WDT] travou (tela=%lums btn=%lums pag=%d) -> reiniciando\n", dt, db, pagina_atual);
+  Serial.printf("[WDT] travou (tela=%lums btn=%lums pag=%d stTela=%s stCan=%s) -> reiniciando\n",
+                dt, db, pagina_atual, (const char*)g_stage_tela, (const char*)g_stage_can);
   // marcador no RTC (sobrevive ao reset) — a EEPROM pode estar ocupada, mas o
   // marcador garante o log "WDT reboot" no proximo boot de qualquer jeito.
   g_wdt_magic = 0x5744;
@@ -2873,11 +2902,33 @@ static void checarTravamento() {
 // ============================================================
 void taskHeartbeat(void* param) {
   Serial.println("[Task Heartbeat] iniciada");
-  vTaskDelay(pdMS_TO_TICKS(30000));
+  vTaskDelay(pdMS_TO_TICKS(5000));
   uint32_t ult_log = 0;
+#if DEBUG_TRACE
+  uint32_t ult_trace = 0;
+#endif
   for (;;) {
     checarTravamento();   // watchdog AUTORITATIVO no nucleo 0 (sobrevive a um congelamento do nucleo 1)
     uint32_t agora = millis();
+#if DEBUG_TRACE
+    // ===== RASTREAMENTO ao vivo (1x/s) — vem do NUCLEO 0, que fica vivo mesmo se o
+    // nucleo 1 congelar. Se o [TRACE] parar de sair e o millis PULAR na proxima
+    // linha, o nucleo 1 travou -> a coluna stTela mostra ONDE. =====
+    if (agora - ult_trace >= 1000) {
+      ult_trace = agora;
+      float v; int rpm, vel;
+      if (xSemaphoreTake(mutex_dados, pdMS_TO_TICKS(20)) == pdTRUE) {
+        v = dados_publicos.tensao; rpm = dados_publicos.rpm; vel = dados_publicos.velocidade;
+        xSemaphoreGive(mutex_dados);
+      } else { v = -1; rpm = -1; vel = -1; }
+      NimBLEServer* s = NimBLEDevice::getServer();
+      int ble = s ? s->getConnectedCount() : 0;
+      Serial.printf("[TRACE] t=%lu telaAge=%lu btnAge=%lu stTela=%s stCan=%s rpm=%d vel=%d V=%.1f heap=%u ble=%d\n",
+                    agora, agora - hb_tela, agora - hb_botoes,
+                    (const char*)g_stage_tela, (const char*)g_stage_can,
+                    rpm, vel, v, ESP.getFreeHeap(), ble);
+    }
+#endif
     if (agora - ult_log >= 60000) {
       ult_log = agora;
       UBaseType_t can_stack = 0, tela_stack = 0;
@@ -2886,7 +2937,11 @@ void taskHeartbeat(void* param) {
       Serial.printf("[Beat] CAN=%u Tela=%u TX=%lu RX=%lu TO=%lu\n", can_stack, tela_stack, tx_ok, rx_ok, timeouts);
       debugLog(4, "HEARTBEAT", can_stack, tela_stack);
     }
+#if DEBUG_TRACE
+    vTaskDelay(pdMS_TO_TICKS(1000));   // trace 1x/s + vigia travamento
+#else
     vTaskDelay(pdMS_TO_TICKS(3000));   // vigia o travamento a cada 3s
+#endif
   }
 }
 
@@ -4244,13 +4299,16 @@ void taskTela(void* param) {
     }
     standby_ativo = false;
 
+    STAGE_TELA("dados");
     DadosCarro d;
     if (xSemaphoreTake(mutex_dados, pdMS_TO_TICKS(50)) == pdTRUE) { d = dados_publicos; xSemaphoreGive(mutex_dados); }
 
     if (pagina_atual != pagina_render) {
+      STAGE_TELA("construirPagina");
       construirPagina(pagina_atual);
       pagina_render = pagina_atual;
     }
+    STAGE_TELA("atualizar");
     if (pagina_atual == 0)      atualizarCockpit(d);
     else if (pagina_atual == 1) atualizarDiag();
     else if (pagina_atual == 2) atualizarSistema();
@@ -4258,7 +4316,9 @@ void taskTela(void* param) {
     else if (pagina_atual == 4) atualizarAjuste();
     else if (pagina_atual == 5) atualizarTemas();
 
+    STAGE_TELA("lv_timer_handler");
     lv_timer_handler();
+    STAGE_TELA("idle");
     vTaskDelay(pdMS_TO_TICKS(15));
   }
 }
@@ -4360,10 +4420,12 @@ void speedFlush(bool parado) {
   // calmo). O maximo do dia so persiste quando o carro para; se reiniciar antes de
   // parar, perde no maximo o recorde de hoje (irrelevante).
   if (!parado) return;
-  speedPrefs.begin("veican", false);  // rw
-  speedPrefs.putInt("sn", speedHistN);
-  speedPrefs.putBytes("shist", speedHist, speedHistN * sizeof(SpeedDia));
-  speedPrefs.end();
+  TRACE_DUR("speedFlush", {
+    speedPrefs.begin("veican", false);  // rw
+    speedPrefs.putInt("sn", speedHistN);
+    speedPrefs.putBytes("shist", speedHist, speedHistN * sizeof(SpeedDia));
+    speedPrefs.end();
+  });
   speedDirty = false;
   speedUltFlush = millis();
 }
