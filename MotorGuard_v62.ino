@@ -186,15 +186,18 @@ SemaphoreHandle_t mutex_dados, mutex_hora, mutex_hodometro, mutex_manut, mutex_d
 // congela, o Serial para; a ULTIMA migalha impressa antes do buraco = onde travou.
 volatile const char* g_stage_tela = "boot";   // nucleo 1 (tela/loop)
 volatile const char* g_stage_can  = "boot";   // nucleo 0 (CAN)
+volatile const char* g_stage_btn  = "boot";   // nucleo 1 (botoes) <<< o suspeito do reboot
 #if DEBUG_TRACE
   #define STAGE_TELA(s) (g_stage_tela = (s))
   #define STAGE_CAN(s)  (g_stage_can  = (s))
+  #define STAGE_BTN(s)  (g_stage_btn  = (s))
   // Cronometra um bloco de gravacao (flash/EEPROM). Se travar, o dur sai gigante.
   #define TRACE_DUR(nome, bloco) do { uint32_t _t0 = millis(); bloco; uint32_t _d = millis() - _t0; \
         if (_d >= 8) Serial.printf("[FLASH] %s = %lums\n", nome, _d); } while (0)
 #else
   #define STAGE_TELA(s)
   #define STAGE_CAN(s)
+  #define STAGE_BTN(s)
   #define TRACE_DUR(nome, bloco) do { bloco; } while (0)
 #endif
 
@@ -2885,8 +2888,8 @@ static void checarTravamento() {
   uint32_t dt = agora - hb_tela;
   uint32_t db = agora - hb_botoes;
   if (dt <= 12000 && db <= 12000) return;     // tudo vivo
-  Serial.printf("[WDT] travou (tela=%lums btn=%lums pag=%d stTela=%s stCan=%s) -> reiniciando\n",
-                dt, db, pagina_atual, (const char*)g_stage_tela, (const char*)g_stage_can);
+  Serial.printf("[WDT] travou (tela=%lums btn=%lums pag=%d stTela=%s stBtn=%s stCan=%s) -> reiniciando\n",
+                dt, db, pagina_atual, (const char*)g_stage_tela, (const char*)g_stage_btn, (const char*)g_stage_can);
   // marcador no RTC (sobrevive ao reset) — a EEPROM pode estar ocupada, mas o
   // marcador garante o log "WDT reboot" no proximo boot de qualquer jeito.
   g_wdt_magic = 0x5744;
@@ -2923,10 +2926,12 @@ void taskHeartbeat(void* param) {
       } else { v = -1; rpm = -1; vel = -1; }
       NimBLEServer* s = NimBLEDevice::getServer();
       int ble = s ? s->getConnectedCount() : 0;
-      Serial.printf("[TRACE] t=%lu telaAge=%lu btnAge=%lu stTela=%s stCan=%s rpm=%d vel=%d V=%.1f heap=%u ble=%d\n",
+      UBaseType_t btn_stack = 0;
+      TaskHandle_t hb = xTaskGetHandle("Botoes"); if (hb) btn_stack = uxTaskGetStackHighWaterMark(hb);
+      Serial.printf("[TRACE] t=%lu telaAge=%lu btnAge=%lu stTela=%s stBtn=%s stCan=%s btnStk=%u rpm=%d vel=%d V=%.1f heap=%u ble=%d\n",
                     agora, agora - hb_tela, agora - hb_botoes,
-                    (const char*)g_stage_tela, (const char*)g_stage_can,
-                    rpm, vel, v, ESP.getFreeHeap(), ble);
+                    (const char*)g_stage_tela, (const char*)g_stage_btn, (const char*)g_stage_can,
+                    btn_stack, rpm, vel, v, ESP.getFreeHeap(), ble);
     }
 #endif
     if (agora - ult_log >= 60000) {
@@ -4712,7 +4717,7 @@ void setup() {
   xTaskCreatePinnedToCore(taskTela,      "Tela",   20480, NULL, 1, NULL, 1);
   xTaskCreatePinnedToCore(taskRTC,       "RTC",    4096, NULL, 1, NULL, 1);
   xTaskCreatePinnedToCore(taskSerial,    "Serial", 4096, NULL, 1, NULL, 1);
-  xTaskCreatePinnedToCore(taskBotoes,    "Botoes", 4096, NULL, 1, NULL, 1);   // prio 1 (era 2): nao afoga tela/loop no nucleo 1
+  xTaskCreatePinnedToCore(taskBotoes,    "Botoes", 6144, NULL, 1, NULL, 1);   // prio 1; stack 6144 (era 4096): folga p/ acoes de botao (rtcAdjust/NVS) sem estourar
 
   speedCarregar();   // historico de velocidade (NVS)
   cockpitEstiloCarregar();   // estilo do painel escolhido
@@ -4863,6 +4868,7 @@ void taskBotoes(void* param) {
   bool menu_longpress_disparado = false;
   for (;;) {
     hb_botoes = millis();
+    STAGE_BTN("read");
     bool agora_ant = digitalRead(BTN_ANT);
     bool agora_menu = digitalRead(BTN_MENU);
     bool agora_prx = digitalRead(BTN_PRX);
@@ -4897,7 +4903,7 @@ void taskBotoes(void* param) {
 
     if (prev_menu == LOW && agora_menu == HIGH) {
       if (!menu_longpress_disparado && t - ultimo_menu > DEBOUNCE_MS) {
-        botaoOK();
+        STAGE_BTN("okMenu"); botaoOK(); STAGE_BTN("read");
         ultimo_menu = t;
       }
       menu_longpress_disparado = false;
@@ -4911,7 +4917,7 @@ void taskBotoes(void* param) {
           manut_confirma_reset = true;
           manut_confirma_selecionado = 1;   // padrao NAO (seguranca)
         } else {
-          botaoOK();
+          STAGE_BTN("okEnter"); botaoOK(); STAGE_BTN("read");
         }
         ultimo_enter = t;
       }
@@ -4995,6 +5001,7 @@ void taskBotoes(void* param) {
     }
 
     prev_ant = agora_ant; prev_menu = agora_menu; prev_prx = agora_prx; prev_enter = agora_enter;
+    STAGE_BTN("idle");
     vTaskDelay(pdMS_TO_TICKS(20));
   }
 }
