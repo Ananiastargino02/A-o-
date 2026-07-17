@@ -2843,18 +2843,50 @@ void taskRTC(void* param) {
 }
 
 // ============================================================
+//  WATCHDOG DE SOFTWARE (compartilhado)
+// ============================================================
+// Chamado pelo loop() (nucleo 1) E pela taskHeartbeat (nucleo 0). Antes o watchdog
+// so vivia no loop(), que roda no NUCLEO 1 — o mesmo nucleo que congelava. Se o
+// nucleo 1 travava, o proprio watchdog travava junto e so reiniciava quando o
+// nucleo 1 voltava (por isso o marcador mostrava ~65s em vez de 12s). Agora a
+// taskHeartbeat, no NUCLEO 0, tambem vigia: mesmo com o nucleo 1 congelado, ela
+// reinicia rapido (~12s). Reiniciar por qualquer um dos dois nucleos = ok.
+static void checarTravamento() {
+  uint32_t agora = millis();
+  if (agora <= 20000) return;                 // ignora a janela de boot
+  uint32_t dt = agora - hb_tela;
+  uint32_t db = agora - hb_botoes;
+  if (dt <= 12000 && db <= 12000) return;     // tudo vivo
+  Serial.printf("[WDT] travou (tela=%lums btn=%lums pag=%d) -> reiniciando\n", dt, db, pagina_atual);
+  // marcador no RTC (sobrevive ao reset) — a EEPROM pode estar ocupada, mas o
+  // marcador garante o log "WDT reboot" no proximo boot de qualquer jeito.
+  g_wdt_magic = 0x5744;
+  g_wdt_tela = dt;
+  g_wdt_btn  = db;
+  debugLog(2, "WDT travou", (uint16_t)dt, (uint16_t)db, (uint8_t)pagina_atual);
+  delay(80);
+  ESP.restart();
+}
+
+// ============================================================
 //  Task Heartbeat
 // ============================================================
 void taskHeartbeat(void* param) {
   Serial.println("[Task Heartbeat] iniciada");
   vTaskDelay(pdMS_TO_TICKS(30000));
+  uint32_t ult_log = 0;
   for (;;) {
-    UBaseType_t can_stack = 0, tela_stack = 0;
-    TaskHandle_t h = xTaskGetHandle("CAN");  if (h) can_stack = uxTaskGetStackHighWaterMark(h);
-    h = xTaskGetHandle("Tela"); if (h) tela_stack = uxTaskGetStackHighWaterMark(h);
-    Serial.printf("[Beat] CAN=%u Tela=%u TX=%lu RX=%lu TO=%lu\n", can_stack, tela_stack, tx_ok, rx_ok, timeouts);
-    debugLog(4, "HEARTBEAT", can_stack, tela_stack);
-    vTaskDelay(pdMS_TO_TICKS(60000));
+    checarTravamento();   // watchdog AUTORITATIVO no nucleo 0 (sobrevive a um congelamento do nucleo 1)
+    uint32_t agora = millis();
+    if (agora - ult_log >= 60000) {
+      ult_log = agora;
+      UBaseType_t can_stack = 0, tela_stack = 0;
+      TaskHandle_t h = xTaskGetHandle("CAN");  if (h) can_stack = uxTaskGetStackHighWaterMark(h);
+      h = xTaskGetHandle("Tela"); if (h) tela_stack = uxTaskGetStackHighWaterMark(h);
+      Serial.printf("[Beat] CAN=%u Tela=%u TX=%lu RX=%lu TO=%lu\n", can_stack, tela_stack, tx_ok, rx_ok, timeouts);
+      debugLog(4, "HEARTBEAT", can_stack, tela_stack);
+    }
+    vTaskDelay(pdMS_TO_TICKS(3000));   // vigia o travamento a cada 3s
   }
 }
 
@@ -4322,7 +4354,12 @@ void fuelCfgSalvar() {
 // mesmo e PARADO (velocidade 0) — momento calmo. Menos escrita = sem freeze.
 void speedFlush(bool parado) {
   if (!speedDirty) return;
-  if (!parado && millis() - speedUltFlush < 60000) return;   // andando: no maximo 1x/min
+  // ANDANDO NAO grava NUNCA. A gravacao na flash (NVS) desliga o cache e, quando a
+  // NVS precisa fazer "garbage collection" (reescrever paginas), o nucleo 1 fica
+  // congelado por SEGUNDOS -> era o reboot "so andando". Guarda so PARADO (momento
+  // calmo). O maximo do dia so persiste quando o carro para; se reiniciar antes de
+  // parar, perde no maximo o recorde de hoje (irrelevante).
+  if (!parado) return;
   speedPrefs.begin("veican", false);  // rw
   speedPrefs.putInt("sn", speedHistN);
   speedPrefs.putBytes("shist", speedHist, speedHistN * sizeof(SpeedDia));
@@ -4660,19 +4697,7 @@ void loop() {
   if (velAtual > 0) speedRegistrar(velAtual);
   speedFlush(velAtual == 0);   // grava na flash preferencialmente PARADO (nao andando)
 
-  if (agora > 20000) {
-    if ((agora - hb_tela > 12000) || (agora - hb_botoes > 12000)) {
-      Serial.printf("[WDT] travou (tela=%lums btn=%lums) -> reiniciando\n",
-                    agora - hb_tela, agora - hb_botoes);
-      // grava DIRETO na EEPROM agora (o loop ainda roda) + no RTC mem p/ o boot
-      debugLog(2, "WDT travou", (uint16_t)(agora - hb_tela), (uint16_t)(agora - hb_botoes));
-      g_wdt_magic = 0x5744;   // marcador valido p/ o proximo boot
-      g_wdt_tela = agora - hb_tela;
-      g_wdt_btn  = agora - hb_botoes;
-      delay(80);
-      ESP.restart();
-    }
-  }
+  checarTravamento();   // watchdog do nucleo 1 (a taskHeartbeat vigia em paralelo no nucleo 0)
   vTaskDelay(pdMS_TO_TICKS(1000));
 }
 
