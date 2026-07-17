@@ -2940,13 +2940,27 @@ void taskHeartbeat(void* param) {
                     btn_stack, rpm, vel, v, ESP.getFreeHeap(), ble);
     }
 #endif
+    // ===== detector de PILHA BAIXA da taskBotoes -> grava NA EEPROM (le offline no PC).
+    // Se a pilha dos botoes chegar perto de estourar (a suspeita do travamento no
+    // Civic), fica registrado no DEBUG mesmo sem Serial ao vivo. Loga 1x por boot.
+    {
+      static bool btn_low_logado = false;
+      UBaseType_t bs = 0;
+      TaskHandle_t hbt = xTaskGetHandle("Botoes"); if (hbt) bs = uxTaskGetStackHighWaterMark(hbt);
+      if (bs > 0 && bs < 500 && !btn_low_logado) {
+        btn_low_logado = true;
+        debugLog(2, "PILHA BTN BAIXA", (uint16_t)bs, 0);
+        Serial.printf("[ALERTA] pilha da taskBotoes baixa: %u bytes livres!\n", bs);
+      }
+    }
     if (agora - ult_log >= 60000) {
       ult_log = agora;
-      UBaseType_t can_stack = 0, tela_stack = 0;
+      UBaseType_t can_stack = 0, tela_stack = 0, btn_stack = 0;
       TaskHandle_t h = xTaskGetHandle("CAN");  if (h) can_stack = uxTaskGetStackHighWaterMark(h);
       h = xTaskGetHandle("Tela"); if (h) tela_stack = uxTaskGetStackHighWaterMark(h);
-      Serial.printf("[Beat] CAN=%u Tela=%u TX=%lu RX=%lu TO=%lu\n", can_stack, tela_stack, tx_ok, rx_ok, timeouts);
-      debugLog(4, "HEARTBEAT", can_stack, tela_stack);
+      h = xTaskGetHandle("Botoes"); if (h) btn_stack = uxTaskGetStackHighWaterMark(h);
+      Serial.printf("[Beat] CAN=%u Tela=%u Btn=%u TX=%lu RX=%lu TO=%lu\n", can_stack, tela_stack, btn_stack, tx_ok, rx_ok, timeouts);
+      debugLog(4, "HEARTBEAT", can_stack, btn_stack);   // v2 agora = pilha dos BOTOES (o suspeito)
     }
 #if DEBUG_TRACE
     vTaskDelay(pdMS_TO_TICKS(1000));   // trace 1x/s + vigia travamento
