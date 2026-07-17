@@ -2888,6 +2888,12 @@ static void checarTravamento() {
   uint32_t dt = agora - hb_tela;
   uint32_t db = agora - hb_botoes;
   if (dt <= 12000 && db <= 12000) return;     // tudo vivo
+  // Quem travou = quem esta mais velho. Guarda a MIGALHA dele NA EEPROM (msg do
+  // log), pra ler DEPOIS no PC com "DEBUG" — sem precisar de Serial ao vivo no carro.
+  bool btnTravou = (db >= dt);
+  const char* culpado = btnTravou ? (const char*)g_stage_btn : (const char*)g_stage_tela;
+  char m[16];
+  snprintf(m, sizeof(m), "trv%c %s", btnTravou ? 'B' : 'T', culpado);   // ex "trvB okMenu"
   Serial.printf("[WDT] travou (tela=%lums btn=%lums pag=%d stTela=%s stBtn=%s stCan=%s) -> reiniciando\n",
                 dt, db, pagina_atual, (const char*)g_stage_tela, (const char*)g_stage_btn, (const char*)g_stage_can);
   // marcador no RTC (sobrevive ao reset) — a EEPROM pode estar ocupada, mas o
@@ -2895,7 +2901,7 @@ static void checarTravamento() {
   g_wdt_magic = 0x5744;
   g_wdt_tela = dt;
   g_wdt_btn  = db;
-  debugLog(2, "WDT travou", (uint16_t)dt, (uint16_t)db, (uint8_t)pagina_atual);
+  debugLog(2, m, (uint16_t)dt, (uint16_t)db, (uint8_t)pagina_atual);   // msg = onde travou
   delay(80);
   ESP.restart();
 }
@@ -4857,6 +4863,19 @@ static void botaoOK() {
   }
 }
 
+// Leitura ANTI-RUIDO: le o pino 3x em ~0,6ms; so aceita o nivel se os 3 baterem.
+// Instavel (ruido eletrico/vibracao no carro) = considera SOLTO (HIGH) e NAO age.
+// Isso impede "clique fantasma" andando, que disparava acoes de menu (rtcAdjust/
+// NVS) e era a suspeita do travamento da taskBotoes.
+static bool lerBotaoEstavel(uint8_t pin) {
+  bool a = digitalRead(pin);
+  delayMicroseconds(300);
+  bool b = digitalRead(pin);
+  delayMicroseconds(300);
+  bool c = digitalRead(pin);
+  return (a == b && b == c) ? a : HIGH;
+}
+
 void taskBotoes(void* param) {
   Serial.println("[Task Botoes] iniciada");
   pinMode(BTN_ANT, INPUT_PULLUP);
@@ -4869,10 +4888,10 @@ void taskBotoes(void* param) {
   for (;;) {
     hb_botoes = millis();
     STAGE_BTN("read");
-    bool agora_ant = digitalRead(BTN_ANT);
-    bool agora_menu = digitalRead(BTN_MENU);
-    bool agora_prx = digitalRead(BTN_PRX);
-    bool agora_enter = digitalRead(BTN_ENTER);
+    bool agora_ant = lerBotaoEstavel(BTN_ANT);
+    bool agora_menu = lerBotaoEstavel(BTN_MENU);
+    bool agora_prx = lerBotaoEstavel(BTN_PRX);
+    bool agora_enter = lerBotaoEstavel(BTN_ENTER);
     uint32_t t = millis();
 
     if (estadoAtual == STANDBY) {
