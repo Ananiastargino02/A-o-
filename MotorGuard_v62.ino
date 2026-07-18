@@ -3482,23 +3482,21 @@ void montarCockpit5() {
   lv_obj_set_style_pad_all(meter, 2, 0);
   lv_meter_scale_t* sc = lv_meter_add_scale(meter);
   lv_meter_set_scale_range(meter, sc, 0, 8, 270, 135);
-  // traços DENSOS e largos -> a faixa fica continua (parece uma banda, nao tracinhos)
-  lv_meter_set_scale_ticks(meter, sc, 81, 3, 13, lv_color_hex(0x1A2A38));
-  lv_meter_set_scale_major_ticks(meter, sc, 10, 4, 15, lv_color_hex(0xECEFF1), 14);
+  // tracinhos FINOS (como na referencia) — 73 marcas finas formam o anel graduado
+  lv_meter_set_scale_ticks(meter, sc, 73, 2, 12, lv_color_hex(0x16232F));
+  lv_meter_set_scale_major_ticks(meter, sc, 9, 2, 16, lv_color_hex(0xECEFF1), 14);
   lv_obj_set_style_text_color(meter, lv_color_hex(0xFFFFFF), LV_PART_TICKS);
   lv_obj_set_style_text_font(meter, &lv_font_montserrat_14, LV_PART_TICKS);
-  // DEGRADE azul: fraco (perto do 0) -> forte (perto do 6)
-  lv_meter_indicator_t* gAzul = lv_meter_add_scale_lines(meter, sc, lv_color_hex(0x06283E), lv_color_hex(0x00E5FF), false, 0);
+  // UM UNICO arco: degrade SUAVE nos tracinhos. Azul apagado (no 0) -> azul vivo (no 6).
+  lv_meter_indicator_t* gAzul = lv_meter_add_scale_lines(meter, sc, lv_color_hex(0x0C3A5C), lv_color_hex(0x35C6FF), false, 0);
   lv_meter_set_indicator_start_value(meter, gAzul, 0);
   lv_meter_set_indicator_end_value(meter, gAzul, 6);
-  // DEGRADE vermelho na zona alta (6..8): vermelho escuro -> vermelho vivo
-  lv_meter_indicator_t* gVerm = lv_meter_add_scale_lines(meter, sc, lv_color_hex(0x7A0A12), lv_color_hex(0xFF1744), false, 0);
+  // zona alta 6..8 em vermelho (degrade laranja-vermelho -> vermelho)
+  lv_meter_indicator_t* gVerm = lv_meter_add_scale_lines(meter, sc, lv_color_hex(0xFF4A2A), lv_color_hex(0xE00016), false, 0);
   lv_meter_set_indicator_start_value(meter, gVerm, 6);
   lv_meter_set_indicator_end_value(meter, gVerm, 8);
-  // arco fino do RPM ATUAL por cima (azul vivo), do 0 ate a rotacao atual
-  indArco = lv_meter_add_arc(meter, sc, 5, lv_color_hex(0x40C4FF), -4);
-  lv_meter_set_indicator_start_value(meter, indArco, 0);
-  lv_meter_set_indicator_end_value(meter, indArco, 0);
+  // NAO ha segundo arco: o anel graduado e o unico arco; o RPM aparece no numero central.
+  indArco = NULL;
   meterMax = 8;
 
   lblRpm = lv_label_create(gCockpit);           // numero grande no centro (RPM real)
