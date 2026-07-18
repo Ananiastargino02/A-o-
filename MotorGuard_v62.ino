@@ -3473,8 +3473,33 @@ void montarCockpit4() {
 void montarCockpit5() {
   lv_obj_t* scr = baseCockpit(0x04060C);
 
-  // ---------- conta-giro central (0-8 x1000, azul ate 6, vermelho 6-8) ----------
-  criarTacometro(gCockpit, 178, LV_ALIGN_CENTER, 0, -6, 0x0091EA, 0x00E5FF, 0x29B6F6, 0xECEFF1, 6);
+  // ---------- conta-giro central com BANDA EM DEGRADE (azul fraco->forte, vermelho no fim) ----------
+  meter = lv_meter_create(gCockpit);
+  lv_obj_set_size(meter, 182, 182);
+  lv_obj_align(meter, LV_ALIGN_CENTER, 0, -6);
+  lv_obj_set_style_bg_opa(meter, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(meter, 0, 0);
+  lv_obj_set_style_pad_all(meter, 2, 0);
+  lv_meter_scale_t* sc = lv_meter_add_scale(meter);
+  lv_meter_set_scale_range(meter, sc, 0, 8, 270, 135);
+  // traços DENSOS e largos -> a faixa fica continua (parece uma banda, nao tracinhos)
+  lv_meter_set_scale_ticks(meter, sc, 81, 3, 13, lv_color_hex(0x1A2A38));
+  lv_meter_set_scale_major_ticks(meter, sc, 10, 4, 15, lv_color_hex(0xECEFF1), 14);
+  lv_obj_set_style_text_color(meter, lv_color_hex(0xFFFFFF), LV_PART_TICKS);
+  lv_obj_set_style_text_font(meter, &lv_font_montserrat_14, LV_PART_TICKS);
+  // DEGRADE azul: fraco (perto do 0) -> forte (perto do 6)
+  lv_meter_indicator_t* gAzul = lv_meter_add_scale_lines(meter, sc, lv_color_hex(0x06283E), lv_color_hex(0x00E5FF), false, 0);
+  lv_meter_set_indicator_start_value(meter, gAzul, 0);
+  lv_meter_set_indicator_end_value(meter, gAzul, 6);
+  // DEGRADE vermelho na zona alta (6..8): vermelho escuro -> vermelho vivo
+  lv_meter_indicator_t* gVerm = lv_meter_add_scale_lines(meter, sc, lv_color_hex(0x7A0A12), lv_color_hex(0xFF1744), false, 0);
+  lv_meter_set_indicator_start_value(meter, gVerm, 6);
+  lv_meter_set_indicator_end_value(meter, gVerm, 8);
+  // arco fino do RPM ATUAL por cima (azul vivo), do 0 ate a rotacao atual
+  indArco = lv_meter_add_arc(meter, sc, 5, lv_color_hex(0x40C4FF), -4);
+  lv_meter_set_indicator_start_value(meter, indArco, 0);
+  lv_meter_set_indicator_end_value(meter, indArco, 0);
+  meterMax = 8;
 
   lblRpm = lv_label_create(gCockpit);           // numero grande no centro (RPM real)
   lv_label_set_text(lblRpm, "0");
@@ -3569,6 +3594,18 @@ void montarCockpit5() {
   lv_obj_set_style_text_color(lblVel, lv_color_white(), 0);
   lv_obj_align(lblVel, LV_ALIGN_TOP_RIGHT, -8, 140);
   rotulo(gCockpit, "km/h", &lv_font_montserrat_14, 0x78909C, LV_ALIGN_TOP_RIGHT, -8, 184);
+
+  // ---------- rodape: DATA (centralizada, com uma linha fina em cima) ----------
+  lv_obj_t* linha = lv_obj_create(gCockpit);
+  lv_obj_set_size(linha, LV_W - 24, 2);
+  lv_obj_align(linha, LV_ALIGN_BOTTOM_MID, 0, -26);
+  lv_obj_set_style_bg_color(linha, lv_color_hex(0x16202F), 0);
+  lv_obj_set_style_border_width(linha, 0, 0);
+  lblData = lv_label_create(gCockpit);
+  lv_label_set_text(lblData, "--/--/----");
+  lv_obj_set_style_text_font(lblData, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(lblData, lv_color_hex(0xB0BEC5), 0);
+  lv_obj_align(lblData, LV_ALIGN_BOTTOM_MID, 0, -7);
 
   criarPopup(scr);
 }
