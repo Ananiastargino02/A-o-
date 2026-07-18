@@ -3482,17 +3482,24 @@ void montarCockpit5() {
   lv_obj_set_style_pad_all(meter, 2, 0);
   lv_meter_scale_t* sc = lv_meter_add_scale(meter);
   lv_meter_set_scale_range(meter, sc, 0, 8, 270, 135);
-  // tracinhos FINOS (como na referencia) — 73 marcas finas formam o anel graduado
-  lv_meter_set_scale_ticks(meter, sc, 73, 2, 12, lv_color_hex(0x16232F));
-  lv_meter_set_scale_major_ticks(meter, sc, 9, 2, 16, lv_color_hex(0xECEFF1), 14);
+  // tracinhos FINOS (81) — anel graduado como na referencia
+  lv_meter_set_scale_ticks(meter, sc, 81, 2, 10, lv_color_hex(0x152430));
+  lv_meter_set_scale_major_ticks(meter, sc, 10, 3, 18, lv_color_hex(0xECEFF1), 14);
   lv_obj_set_style_text_color(meter, lv_color_hex(0xFFFFFF), LV_PART_TICKS);
   lv_obj_set_style_text_font(meter, &lv_font_montserrat_14, LV_PART_TICKS);
-  // UM UNICO arco: degrade SUAVE nos tracinhos. Azul apagado (no 0) -> azul vivo (no 6).
-  lv_meter_indicator_t* gAzul = lv_meter_add_scale_lines(meter, sc, lv_color_hex(0x0C3A5C), lv_color_hex(0x35C6FF), false, 0);
+  // HALO suave ATRAS (tracos mais largos e apagados) -> da o "brilho" das bordas
+  lv_meter_indicator_t* hAzul = lv_meter_add_scale_lines(meter, sc, lv_color_hex(0x123A57), lv_color_hex(0x2C86BE), true, 4);
+  lv_meter_set_indicator_start_value(meter, hAzul, 0);
+  lv_meter_set_indicator_end_value(meter, hAzul, 6);
+  lv_meter_indicator_t* hVerm = lv_meter_add_scale_lines(meter, sc, lv_color_hex(0x7A2A18), lv_color_hex(0x8A1018), true, 4);
+  lv_meter_set_indicator_start_value(meter, hVerm, 6);
+  lv_meter_set_indicator_end_value(meter, hVerm, 8);
+  // UM UNICO arco por cima: degrade SUAVE e LOCAL. Azul (nao tao escuro) no 0 -> azul vivo no 6.
+  lv_meter_indicator_t* gAzul = lv_meter_add_scale_lines(meter, sc, lv_color_hex(0x2A6296), lv_color_hex(0x7FD8FF), true, 0);
   lv_meter_set_indicator_start_value(meter, gAzul, 0);
   lv_meter_set_indicator_end_value(meter, gAzul, 6);
-  // zona alta 6..8 em vermelho (degrade laranja-vermelho -> vermelho)
-  lv_meter_indicator_t* gVerm = lv_meter_add_scale_lines(meter, sc, lv_color_hex(0xFF4A2A), lv_color_hex(0xE00016), false, 0);
+  // zona alta 6..8 em vermelho VIVO (nao escurece ate o fim)
+  lv_meter_indicator_t* gVerm = lv_meter_add_scale_lines(meter, sc, lv_color_hex(0xFF6A2A), lv_color_hex(0xF51828), true, 0);
   lv_meter_set_indicator_start_value(meter, gVerm, 6);
   lv_meter_set_indicator_end_value(meter, gVerm, 8);
   // NAO ha segundo arco: o anel graduado e o unico arco; o RPM aparece no numero central.
