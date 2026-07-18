@@ -3013,7 +3013,6 @@ static lv_obj_t *popup, *popupMsg, *popupIcon;
 static lv_obj_t *barRpm = NULL, *barVel = NULL;   // para estilos com barra
 static lv_obj_t *batBody = NULL, *batFill = NULL, *batTxt = NULL, *batNub = NULL;   // bateria estilo iPhone
 static int batInnerW = 0;      // largura util interna do preenchimento da bateria
-static lv_obj_t *lblKmRod = NULL, *lblManutAviso = NULL, *iconManut = NULL;  // barra de manutencao (estilo Performance)
 static int meterMax = 10;      // teto do arco do conta-giro (em milhares) por estilo
 uint8_t cockpit_estilo = 0;   // 0=Classico 1=Ferrari 2=Lamborghini 3=Tesla
 uint8_t tema_sel = 0;         // selecao na pagina de Temas
@@ -3502,19 +3501,19 @@ void montarCockpit5() {
   lv_obj_set_style_text_color(lblHora, lv_color_white(), 0);
   lv_obj_align(lblHora, LV_ALIGN_TOP_LEFT, 8, 4);
 
-  // ---------- coluna ESQUERDA: COOLANT + termometro + temp + barra ----------
-  rotulo(gCockpit, "COOLANT", &lv_font_montserrat_14, 0x78909C, LV_ALIGN_TOP_LEFT, 8, 42);
+  // ---------- coluna ESQUERDA: TEMPERATURA (termometro) + COMBUSTIVEL embaixo ----------
+  rotulo(gCockpit, "TEMP.", &lv_font_montserrat_14, 0x78909C, LV_ALIGN_TOP_LEFT, 8, 38);
   // termometro azul (haste + bulbo)
   lv_obj_t* thStem = lv_obj_create(gCockpit);
   lv_obj_set_size(thStem, 5, 15);
-  lv_obj_align(thStem, LV_ALIGN_TOP_LEFT, 11, 60);
+  lv_obj_align(thStem, LV_ALIGN_TOP_LEFT, 11, 55);
   lv_obj_set_style_bg_color(thStem, lv_color_hex(0x00B0FF), 0);
   lv_obj_set_style_border_width(thStem, 0, 0);
   lv_obj_set_style_radius(thStem, 3, 0);
   lv_obj_clear_flag(thStem, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_t* thBulb = lv_obj_create(gCockpit);
   lv_obj_set_size(thBulb, 11, 11);
-  lv_obj_align(thBulb, LV_ALIGN_TOP_LEFT, 8, 72);
+  lv_obj_align(thBulb, LV_ALIGN_TOP_LEFT, 8, 67);
   lv_obj_set_style_bg_color(thBulb, lv_color_hex(0x00B0FF), 0);
   lv_obj_set_style_border_width(thBulb, 0, 0);
   lv_obj_set_style_radius(thBulb, 6, 0);
@@ -3523,29 +3522,37 @@ void montarCockpit5() {
   lv_label_set_text(lblTemp, "--C");
   lv_obj_set_style_text_font(lblTemp, &lv_font_montserrat_28, 0);
   lv_obj_set_style_text_color(lblTemp, lv_color_white(), 0);
-  lv_obj_align(lblTemp, LV_ALIGN_TOP_LEFT, 28, 58);
-  barTemp = lv_bar_create(gCockpit);            // nivel do coolant
-  lv_obj_set_size(barTemp, 62, 7);
-  lv_obj_align(barTemp, LV_ALIGN_TOP_LEFT, 10, 92);
-  lv_bar_set_range(barTemp, 40, 120);
-  lv_obj_set_style_bg_color(barTemp, lv_color_hex(0x16202F), LV_PART_MAIN);
-  lv_obj_set_style_bg_color(barTemp, lv_color_hex(0x00B0FF), LV_PART_INDICATOR);
-  lv_obj_set_style_radius(barTemp, 4, LV_PART_INDICATOR);
+  lv_obj_align(lblTemp, LV_ALIGN_TOP_LEFT, 28, 54);
 
-  // ---------- coluna DIREITA: VOLTAGE + bateria + SPEED ----------
-  rotulo(gCockpit, "VOLTAGE", &lv_font_montserrat_14, 0x78909C, LV_ALIGN_TOP_RIGHT, -8, 42);
+  // COMBUSTIVEL embaixo da temperatura (rotulo + % + barra de nivel)
+  rotulo(gCockpit, "COMBUSTIVEL", &lv_font_montserrat_14, 0x78909C, LV_ALIGN_TOP_LEFT, 8, 98);
+  lblComb = lv_label_create(gCockpit);
+  lv_label_set_text(lblComb, "--");
+  lv_obj_set_style_text_font(lblComb, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(lblComb, lv_color_hex(0xFFC107), 0);
+  lv_obj_align(lblComb, LV_ALIGN_TOP_LEFT, 8, 114);
+  barFuel = lv_bar_create(gCockpit);            // nivel de combustivel
+  lv_obj_set_size(barFuel, 84, 8);
+  lv_obj_align(barFuel, LV_ALIGN_TOP_LEFT, 10, 148);
+  lv_bar_set_range(barFuel, 0, 100);
+  lv_obj_set_style_bg_color(barFuel, lv_color_hex(0x16202F), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(barFuel, lv_color_hex(0xFFC107), LV_PART_INDICATOR);
+  lv_obj_set_style_radius(barFuel, 4, LV_PART_INDICATOR);
+
+  // ---------- coluna DIREITA: TENSAO + bateria + VELOCIDADE ----------
+  rotulo(gCockpit, "TENSAO", &lv_font_montserrat_14, 0x78909C, LV_ALIGN_TOP_RIGHT, -8, 42);
   lblVolt = lv_label_create(gCockpit);
   lv_label_set_text(lblVolt, "--V");
   lv_obj_set_style_text_font(lblVolt, &lv_font_montserrat_28, 0);
   lv_obj_set_style_text_color(lblVolt, lv_color_white(), 0);
   lv_obj_align(lblVolt, LV_ALIGN_TOP_RIGHT, -8, 58);
-  barFuel = lv_bar_create(gCockpit);            // nivel da tensao (reaproveita barFuel)
-  lv_obj_set_size(barFuel, 46, 7);
-  lv_obj_align(barFuel, LV_ALIGN_TOP_RIGHT, -30, 92);
-  lv_bar_set_range(barFuel, 0, 100);
-  lv_obj_set_style_bg_color(barFuel, lv_color_hex(0x16202F), LV_PART_MAIN);
-  lv_obj_set_style_bg_color(barFuel, lv_color_hex(0x00B0FF), LV_PART_INDICATOR);
-  lv_obj_set_style_radius(barFuel, 4, LV_PART_INDICATOR);
+  barTemp = lv_bar_create(gCockpit);            // nivel da tensao (reaproveita barTemp)
+  lv_obj_set_size(barTemp, 46, 7);
+  lv_obj_align(barTemp, LV_ALIGN_TOP_RIGHT, -30, 92);
+  lv_bar_set_range(barTemp, 0, 100);
+  lv_obj_set_style_bg_color(barTemp, lv_color_hex(0x16202F), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(barTemp, lv_color_hex(0x00B0FF), LV_PART_INDICATOR);
+  lv_obj_set_style_radius(barTemp, 4, LV_PART_INDICATOR);
   lv_obj_t* batIco = lv_obj_create(gCockpit);   // iconezinho de bateria (estatico)
   lv_obj_set_size(batIco, 16, 9);
   lv_obj_align(batIco, LV_ALIGN_TOP_RIGHT, -10, 91);
@@ -3555,37 +3562,13 @@ void montarCockpit5() {
   lv_obj_set_style_radius(batIco, 1, 0);
   lv_obj_clear_flag(batIco, LV_OBJ_FLAG_SCROLLABLE);
 
-  rotulo(gCockpit, "SPEED", &lv_font_montserrat_14, 0x78909C, LV_ALIGN_TOP_RIGHT, -8, 124);
+  rotulo(gCockpit, "VELOC.", &lv_font_montserrat_14, 0x78909C, LV_ALIGN_TOP_RIGHT, -8, 124);
   lblVel = lv_label_create(gCockpit);
   lv_label_set_text(lblVel, "0");
   lv_obj_set_style_text_font(lblVel, &lv_font_montserrat_40, 0);
   lv_obj_set_style_text_color(lblVel, lv_color_white(), 0);
   lv_obj_align(lblVel, LV_ALIGN_TOP_RIGHT, -8, 140);
   rotulo(gCockpit, "km/h", &lv_font_montserrat_14, 0x78909C, LV_ALIGN_TOP_RIGHT, -8, 184);
-
-  // ---------- barra de MANUTENCAO embaixo ----------
-  lv_obj_t* linha = lv_obj_create(gCockpit);    // divisoria fina
-  lv_obj_set_size(linha, LV_W - 16, 2);
-  lv_obj_align(linha, LV_ALIGN_BOTTOM_MID, 0, -26);
-  lv_obj_set_style_bg_color(linha, lv_color_hex(0x16202F), 0);
-  lv_obj_set_style_border_width(linha, 0, 0);
-  iconManut = lv_label_create(gCockpit);        // "chave" de manutencao (laranja)
-  lv_label_set_text(iconManut, LV_SYMBOL_SETTINGS);
-  lv_obj_set_style_text_font(iconManut, &lv_font_montserrat_14, 0);
-  lv_obj_set_style_text_color(iconManut, lv_color_hex(0xFF9800), 0);
-  lv_obj_align(iconManut, LV_ALIGN_BOTTOM_LEFT, 8, -6);
-  lblManutAviso = lv_label_create(gCockpit);
-  lv_label_set_text(lblManutAviso, "MAINTENANCE DUE");
-  lv_obj_set_style_text_font(lblManutAviso, &lv_font_montserrat_14, 0);
-  lv_obj_set_style_text_color(lblManutAviso, lv_color_hex(0xFF9800), 0);
-  lv_obj_align(lblManutAviso, LV_ALIGN_BOTTOM_LEFT, 28, -6);
-  lv_obj_add_flag(lblManutAviso, LV_OBJ_FLAG_HIDDEN);   // so aparece quando vencer
-  lv_obj_add_flag(iconManut, LV_OBJ_FLAG_HIDDEN);
-  lblKmRod = lv_label_create(gCockpit);
-  lv_label_set_text(lblKmRod, "-- km");
-  lv_obj_set_style_text_font(lblKmRod, &lv_font_montserrat_14, 0);
-  lv_obj_set_style_text_color(lblKmRod, lv_color_hex(0xB0BEC5), 0);
-  lv_obj_align(lblKmRod, LV_ALIGN_BOTTOM_RIGHT, -8, -6);
 
   criarPopup(scr);
 }
@@ -3598,7 +3581,6 @@ void montarCockpit() {
   lblVel = lblRpm = lblTemp = lblData = lblVoltTit = lblVolt = lblComb = lblHora = NULL;
   popup = NULL; popupMsg = NULL; popupIcon = NULL;
   batBody = NULL; batFill = NULL; batTxt = NULL; batNub = NULL;
-  lblKmRod = NULL; lblManutAviso = NULL; iconManut = NULL;
   switch (cockpit_estilo) {
     case 1: montarCockpit1(); break;
     case 2: montarCockpit2(); break;
@@ -3674,12 +3656,12 @@ void atualizarCockpit(DadosCarro &d) {
       last_arc = arc;
     }
   }
-  if (cockpit_estilo == 5) {   // Performance: barra do coolant (barTemp) e da tensao (barFuel)
-    if (barTemp && d.temp_motor > -40) lv_bar_set_value(barTemp, d.temp_motor, LV_ANIM_OFF);
-    if (barFuel && d.tensao > 0) {
+  if (cockpit_estilo == 5) {   // Performance: barra de COMBUSTIVEL (barFuel) e de TENSAO (barTemp)
+    if (barFuel && d.combust >= 0) lv_bar_set_value(barFuel, d.combust, LV_ANIM_OFF);
+    if (barTemp && d.tensao > 0) {
       int vp = (int)((d.tensao - 11.0f) / 4.0f * 100.0f);   // 11V=0%  15V=100%
       if (vp < 0) vp = 0; if (vp > 100) vp = 100;
-      lv_bar_set_value(barFuel, vp, LV_ANIM_OFF);
+      lv_bar_set_value(barTemp, vp, LV_ANIM_OFF);
     }
   }
   if (barRpm) lv_bar_set_value(barRpm, rpm, LV_ANIM_OFF);
@@ -3741,17 +3723,9 @@ void atualizarCockpit(DadosCarro &d) {
       if (t_sob && agora - t_sob >= 3000) snprintf(alerts[alertCnt++], 20, "SOBRECARGA");
       if (t_bat && agora - t_bat >= 4000) snprintf(alerts[alertCnt++], 20, "BATERIA FRACA");
     }
-    bool manutVencida = false;
     for (int i = 0; i < NUM_ITENS_MANUT && alertCnt < 6; i++)
-      if (itemVencido(i, km, ts)) { manutVencida = true; if (alertCnt < 6) snprintf(alerts[alertCnt++], 20, "TROCAR %s", NOMES_ITENS[i]); }
+      if (itemVencido(i, km, ts)) snprintf(alerts[alertCnt++], 20, "TROCAR %s", NOMES_ITENS[i]);
     if (alertCnt > 0) alertIdx = alertIdx % alertCnt; else alertIdx = 0;
-
-    // ----- barra de manutencao do estilo Performance (km sempre; aviso se venceu) -----
-    if (lblKmRod) { snprintf(b, sizeof(b), "%lu km", (unsigned long)km); lv_label_set_text(lblKmRod, b); }
-    if (lblManutAviso && iconManut) {
-      if (manutVencida) { lv_obj_clear_flag(lblManutAviso, LV_OBJ_FLAG_HIDDEN); lv_obj_clear_flag(iconManut, LV_OBJ_FLAG_HIDDEN); }
-      else              { lv_obj_add_flag(lblManutAviso, LV_OBJ_FLAG_HIDDEN);   lv_obj_add_flag(iconManut, LV_OBJ_FLAG_HIDDEN); }
-    }
   }
   if (alertCnt > 1 && t % 130 == 0) alertIdx = (alertIdx + 1) % alertCnt;
 
