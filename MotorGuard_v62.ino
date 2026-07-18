@@ -3508,25 +3508,54 @@ void montarCockpit5() {
 
   // ---------- MOLDURA fina 3D em volta do mostrador ("capinha" tipo painel de moto) ----------
   // aro externo ESCURO + sombra suave (parece levantado); aro interno CLARO (brilho da borda).
+  // Um tiquinho mais grossa que antes (2->3 e 1->2), mas ainda discreta.
   lv_obj_t* aroExt = lv_obj_create(gCockpit);
-  lv_obj_set_size(aroExt, 186, 186);
+  lv_obj_set_size(aroExt, 188, 188);
   lv_obj_align(aroExt, LV_ALIGN_CENTER, 0, -6);
   lv_obj_set_style_bg_opa(aroExt, LV_OPA_TRANSP, 0);
   lv_obj_set_style_radius(aroExt, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_border_color(aroExt, lv_color_hex(0x0C1824), 0);
-  lv_obj_set_style_border_width(aroExt, 2, 0);
+  lv_obj_set_style_border_width(aroExt, 3, 0);
   lv_obj_set_style_shadow_color(aroExt, lv_color_hex(0x000000), 0);
-  lv_obj_set_style_shadow_width(aroExt, 5, 0);
+  lv_obj_set_style_shadow_width(aroExt, 6, 0);
   lv_obj_set_style_shadow_opa(aroExt, LV_OPA_30, 0);
   lv_obj_clear_flag(aroExt, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_t* aroInt = lv_obj_create(gCockpit);
-  lv_obj_set_size(aroInt, 180, 180);
+  lv_obj_set_size(aroInt, 181, 181);
   lv_obj_align(aroInt, LV_ALIGN_CENTER, 0, -6);
   lv_obj_set_style_bg_opa(aroInt, LV_OPA_TRANSP, 0);
   lv_obj_set_style_radius(aroInt, LV_RADIUS_CIRCLE, 0);
-  lv_obj_set_style_border_color(aroInt, lv_color_hex(0x40566B), 0);   // brilho fino da borda
-  lv_obj_set_style_border_width(aroInt, 1, 0);
+  lv_obj_set_style_border_color(aroInt, lv_color_hex(0x46607A), 0);   // brilho fino da borda
+  lv_obj_set_style_border_width(aroInt, 2, 0);
   lv_obj_clear_flag(aroInt, LV_OBJ_FLAG_SCROLLABLE);
+
+  // ---------- DIVISORIAS entre os parametros (ganchinho + toque de azul do arco, depois reto) ----------
+  // Espelhadas em cima/baixo dos dois lados. Pontos em coordenadas do gCockpit.
+  static lv_point_t dLT[] = {{106, 30}, {98, 35}, {8, 35}};      // ESQ cima  (sob a hora)
+  static lv_point_t dLM[] = {{62, 88}, {56, 92}, {8, 92}};       // ESQ baixo (entre temp e comb)
+  static lv_point_t dRT[] = {{214, 30}, {222, 35}, {312, 35}};   // DIR cima  (sobre a tensao)
+  static lv_point_t dRM[] = {{258, 112}, {264, 116}, {312, 116}};// DIR baixo (entre tensao e velocidade)
+  lv_point_t* divs[4] = {dLT, dLM, dRT, dRM};
+  for (int i = 0; i < 4; i++) {
+    lv_obj_t* ln = lv_line_create(gCockpit);
+    lv_line_set_points(ln, divs[i], 3);
+    lv_obj_set_style_line_color(ln, lv_color_hex(0x243849), 0);
+    lv_obj_set_style_line_width(ln, 1, 0);
+    lv_obj_set_style_line_rounded(ln, true, 0);
+  }
+  // acento AZUL curtinho na ponta (perto do arco) — "aquela cor vindo do arco"
+  static lv_point_t aLT[] = {{112, 27}, {106, 30}};
+  static lv_point_t aLM[] = {{68, 85}, {62, 88}};
+  static lv_point_t aRT[] = {{208, 27}, {214, 30}};
+  static lv_point_t aRM[] = {{252, 109}, {258, 112}};
+  lv_point_t* accs[4] = {aLT, aLM, aRT, aRM};
+  for (int i = 0; i < 4; i++) {
+    lv_obj_t* ln = lv_line_create(gCockpit);
+    lv_line_set_points(ln, accs[i], 2);
+    lv_obj_set_style_line_color(ln, lv_color_hex(0x2C86BE), 0);
+    lv_obj_set_style_line_width(ln, 2, 0);
+    lv_obj_set_style_line_rounded(ln, true, 0);
+  }
 
   lblRpm = lv_label_create(gCockpit);           // numero grande no centro (RPM real)
   lv_label_set_text(lblRpm, "0");
