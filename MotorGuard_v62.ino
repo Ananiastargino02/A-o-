@@ -3475,7 +3475,7 @@ void montarCockpit5() {
 
   // ---------- conta-giro central com BANDA EM DEGRADE (azul fraco->forte, vermelho no fim) ----------
   meter = lv_meter_create(gCockpit);
-  lv_obj_set_size(meter, 182, 182);
+  lv_obj_set_size(meter, 174, 174);   // um pouco menor: afasta o arco dos dados das laterais
   lv_obj_align(meter, LV_ALIGN_CENTER, 0, -6);
   lv_obj_set_style_bg_opa(meter, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(meter, 0, 0);
@@ -3505,6 +3505,28 @@ void montarCockpit5() {
   // NAO ha segundo arco: o anel graduado e o unico arco; o RPM aparece no numero central.
   indArco = NULL;
   meterMax = 8;
+
+  // ---------- MOLDURA fina 3D em volta do mostrador ("capinha" tipo painel de moto) ----------
+  // aro externo ESCURO + sombra suave (parece levantado); aro interno CLARO (brilho da borda).
+  lv_obj_t* aroExt = lv_obj_create(gCockpit);
+  lv_obj_set_size(aroExt, 186, 186);
+  lv_obj_align(aroExt, LV_ALIGN_CENTER, 0, -6);
+  lv_obj_set_style_bg_opa(aroExt, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_radius(aroExt, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_border_color(aroExt, lv_color_hex(0x0C1824), 0);
+  lv_obj_set_style_border_width(aroExt, 2, 0);
+  lv_obj_set_style_shadow_color(aroExt, lv_color_hex(0x000000), 0);
+  lv_obj_set_style_shadow_width(aroExt, 5, 0);
+  lv_obj_set_style_shadow_opa(aroExt, LV_OPA_30, 0);
+  lv_obj_clear_flag(aroExt, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_t* aroInt = lv_obj_create(gCockpit);
+  lv_obj_set_size(aroInt, 180, 180);
+  lv_obj_align(aroInt, LV_ALIGN_CENTER, 0, -6);
+  lv_obj_set_style_bg_opa(aroInt, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_radius(aroInt, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_border_color(aroInt, lv_color_hex(0x40566B), 0);   // brilho fino da borda
+  lv_obj_set_style_border_width(aroInt, 1, 0);
+  lv_obj_clear_flag(aroInt, LV_OBJ_FLAG_SCROLLABLE);
 
   lblRpm = lv_label_create(gCockpit);           // numero grande no centro (RPM real)
   lv_label_set_text(lblRpm, "0");
@@ -3552,7 +3574,7 @@ void montarCockpit5() {
   lv_label_set_text(lblTemp, "--C");
   lv_obj_set_style_text_font(lblTemp, &lv_font_montserrat_28, 0);
   lv_obj_set_style_text_color(lblTemp, lv_color_white(), 0);
-  lv_obj_align(lblTemp, LV_ALIGN_TOP_LEFT, 22, 54);
+  lv_obj_align(lblTemp, LV_ALIGN_TOP_LEFT, 18, 54);
 
   // COMBUSTIVEL embaixo da temperatura (abreviado + % + barra estreita p/ NAO tocar o mostrador)
   rotulo(gCockpit, "COMB.", &lv_font_montserrat_14, 0x78909C, LV_ALIGN_TOP_LEFT, 8, 96);
