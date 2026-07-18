@@ -3547,25 +3547,33 @@ void montarCockpit5() {
   lv_label_set_text(lblTemp, "--C");
   lv_obj_set_style_text_font(lblTemp, &lv_font_montserrat_28, 0);
   lv_obj_set_style_text_color(lblTemp, lv_color_white(), 0);
-  lv_obj_align(lblTemp, LV_ALIGN_TOP_LEFT, 28, 54);
+  lv_obj_align(lblTemp, LV_ALIGN_TOP_LEFT, 22, 54);
 
-  // COMBUSTIVEL embaixo da temperatura (rotulo + % + barra de nivel)
-  rotulo(gCockpit, "COMBUSTIVEL", &lv_font_montserrat_14, 0x78909C, LV_ALIGN_TOP_LEFT, 8, 98);
+  // COMBUSTIVEL embaixo da temperatura (abreviado + % + barra estreita p/ NAO tocar o mostrador)
+  rotulo(gCockpit, "COMB.", &lv_font_montserrat_14, 0x78909C, LV_ALIGN_TOP_LEFT, 8, 96);
   lblComb = lv_label_create(gCockpit);
   lv_label_set_text(lblComb, "--");
   lv_obj_set_style_text_font(lblComb, &lv_font_montserrat_28, 0);
   lv_obj_set_style_text_color(lblComb, lv_color_hex(0xFFC107), 0);
-  lv_obj_align(lblComb, LV_ALIGN_TOP_LEFT, 8, 114);
-  barFuel = lv_bar_create(gCockpit);            // nivel de combustivel
-  lv_obj_set_size(barFuel, 84, 8);
-  lv_obj_align(barFuel, LV_ALIGN_TOP_LEFT, 10, 148);
+  lv_obj_align(lblComb, LV_ALIGN_TOP_LEFT, 8, 116);
+  barFuel = lv_bar_create(gCockpit);            // nivel de combustivel (estreita: x10..x64)
+  lv_obj_set_size(barFuel, 54, 8);
+  lv_obj_align(barFuel, LV_ALIGN_TOP_LEFT, 10, 150);
   lv_bar_set_range(barFuel, 0, 100);
   lv_obj_set_style_bg_color(barFuel, lv_color_hex(0x16202F), LV_PART_MAIN);
   lv_obj_set_style_bg_color(barFuel, lv_color_hex(0xFFC107), LV_PART_INDICATOR);
   lv_obj_set_style_radius(barFuel, 4, LV_PART_INDICATOR);
 
-  // ---------- coluna DIREITA: TENSAO + bateria + VELOCIDADE ----------
-  rotulo(gCockpit, "TENSAO", &lv_font_montserrat_14, 0x78909C, LV_ALIGN_TOP_RIGHT, -8, 42);
+  // ---------- coluna DIREITA: ALTERNADOR/BATERIA + tensao + VELOCIDADE ----------
+  // rotulo dinamico: "ALTERNADOR" com o motor ligado, "BATERIA" desligado (atualizarCockpit
+  // troca o texto). Caixa de largura fixa + alinhado a direita p/ nao mudar de lugar.
+  lblVoltTit = lv_label_create(gCockpit);
+  lv_label_set_text(lblVoltTit, "ALTERNADOR");
+  lv_obj_set_style_text_font(lblVoltTit, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(lblVoltTit, lv_color_hex(0x78909C), 0);
+  lv_obj_set_width(lblVoltTit, 150);
+  lv_obj_set_style_text_align(lblVoltTit, LV_TEXT_ALIGN_RIGHT, 0);
+  lv_obj_align(lblVoltTit, LV_ALIGN_TOP_RIGHT, -8, 42);
   lblVolt = lv_label_create(gCockpit);
   lv_label_set_text(lblVolt, "--V");
   lv_obj_set_style_text_font(lblVolt, &lv_font_montserrat_28, 0);
@@ -3717,8 +3725,12 @@ void atualizarCockpit(DadosCarro &d) {
     }
   }
 
-  if (lblVoltTit)
-    lv_label_set_text(lblVoltTit, ligado ? (LV_SYMBOL_CHARGE " ALTERN.") : (LV_SYMBOL_BATTERY_FULL " BAT."));
+  if (lblVoltTit) {
+    if (cockpit_estilo == 5)   // Performance: palavra inteira, sem simbolo
+      lv_label_set_text(lblVoltTit, ligado ? "ALTERNADOR" : "BATERIA");
+    else
+      lv_label_set_text(lblVoltTit, ligado ? (LV_SYMBOL_CHARGE " ALTERN.") : (LV_SYMBOL_BATTERY_FULL " BAT."));
+  }
   if (lblVolt && d.tensao > 0) { snprintf(b, sizeof(b), "%.1fV", d.tensao); lv_label_set_text(lblVolt, b); }
   atualizarBateria(d.tensao, ligado);   // tensao sempre; icone de saude so com carro desligado
 
