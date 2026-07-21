@@ -3013,6 +3013,7 @@ static lv_obj_t *popup, *popupMsg, *popupIcon;
 static lv_obj_t *barRpm = NULL, *barVel = NULL;   // para estilos com barra
 static lv_obj_t *batBody = NULL, *batFill = NULL, *batTxt = NULL, *batNub = NULL;   // bateria estilo iPhone
 static int batInnerW = 0;      // largura util interna do preenchimento da bateria
+static lv_obj_t *rpmMarker = NULL;   // "luz" que sobe na arco do conta-giro (estilo Performance)
 static int meterMax = 10;      // teto do arco do conta-giro (em milhares) por estilo
 uint8_t cockpit_estilo = 0;   // 0=Classico 1=Ferrari 2=Lamborghini 3=Tesla
 uint8_t tema_sel = 0;         // selecao na pagina de Temas
@@ -3475,7 +3476,7 @@ void montarCockpit5() {
 
   // ---------- conta-giro central com BANDA EM DEGRADE (azul fraco->forte, vermelho no fim) ----------
   meter = lv_meter_create(gCockpit);
-  lv_obj_set_size(meter, 174, 174);   // um pouco menor: afasta o arco dos dados das laterais
+  lv_obj_set_size(meter, 152, 152);   // menor: garante que NADA das laterais encoste no arco
   lv_obj_align(meter, LV_ALIGN_CENTER, 0, -6);
   lv_obj_set_style_bg_opa(meter, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(meter, 0, 0);
@@ -3483,8 +3484,8 @@ void montarCockpit5() {
   lv_meter_scale_t* sc = lv_meter_add_scale(meter);
   lv_meter_set_scale_range(meter, sc, 0, 8, 270, 135);
   // tracinhos FINOS (81) — anel graduado como na referencia
-  lv_meter_set_scale_ticks(meter, sc, 81, 2, 10, lv_color_hex(0x152430));
-  lv_meter_set_scale_major_ticks(meter, sc, 10, 3, 18, lv_color_hex(0xECEFF1), 14);
+  lv_meter_set_scale_ticks(meter, sc, 81, 2, 9, lv_color_hex(0x152430));
+  lv_meter_set_scale_major_ticks(meter, sc, 10, 3, 16, lv_color_hex(0xECEFF1), 12);
   lv_obj_set_style_text_color(meter, lv_color_hex(0xFFFFFF), LV_PART_TICKS);
   lv_obj_set_style_text_font(meter, &lv_font_montserrat_14, LV_PART_TICKS);
   // HALO suave ATRAS (tracos mais largos e apagados) -> da o "brilho" das bordas
@@ -3510,7 +3511,7 @@ void montarCockpit5() {
   // aro externo ESCURO + sombra suave (parece levantado); aro interno CLARO (brilho da borda).
   // Um tiquinho mais grossa que antes (2->3 e 1->2), mas ainda discreta.
   lv_obj_t* aroExt = lv_obj_create(gCockpit);
-  lv_obj_set_size(aroExt, 188, 188);
+  lv_obj_set_size(aroExt, 164, 164);
   lv_obj_align(aroExt, LV_ALIGN_CENTER, 0, -6);
   lv_obj_set_style_bg_opa(aroExt, LV_OPA_TRANSP, 0);
   lv_obj_set_style_radius(aroExt, LV_RADIUS_CIRCLE, 0);
@@ -3521,7 +3522,7 @@ void montarCockpit5() {
   lv_obj_set_style_shadow_opa(aroExt, LV_OPA_30, 0);
   lv_obj_clear_flag(aroExt, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_t* aroInt = lv_obj_create(gCockpit);
-  lv_obj_set_size(aroInt, 181, 181);
+  lv_obj_set_size(aroInt, 158, 158);
   lv_obj_align(aroInt, LV_ALIGN_CENTER, 0, -6);
   lv_obj_set_style_bg_opa(aroInt, LV_OPA_TRANSP, 0);
   lv_obj_set_style_radius(aroInt, LV_RADIUS_CIRCLE, 0);
@@ -3529,12 +3530,23 @@ void montarCockpit5() {
   lv_obj_set_style_border_width(aroInt, 2, 0);
   lv_obj_clear_flag(aroInt, LV_OBJ_FLAG_SCROLLABLE);
 
+  // ---------- LUZ do RPM que SOBE na arco (marcador pequeno; nao tapa o numero central) ----------
+  rpmMarker = lv_obj_create(gCockpit);
+  lv_obj_set_size(rpmMarker, 10, 10);
+  lv_obj_set_style_radius(rpmMarker, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(rpmMarker, lv_color_hex(0xEAF6FF), 0);   // luz branco-azulada
+  lv_obj_set_style_border_width(rpmMarker, 0, 0);
+  lv_obj_set_style_shadow_color(rpmMarker, lv_color_hex(0x35C6FF), 0);
+  lv_obj_set_style_shadow_width(rpmMarker, 12, 0);                    // brilho ao redor
+  lv_obj_set_style_shadow_opa(rpmMarker, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(rpmMarker, LV_OBJ_FLAG_SCROLLABLE);
+
   // ---------- DIVISORIAS entre os parametros (ganchinho + toque de azul do arco, depois reto) ----------
   // Espelhadas em cima/baixo dos dois lados. Pontos em coordenadas do gCockpit.
-  static lv_point_t dLT[] = {{106, 30}, {98, 35}, {8, 35}};      // ESQ cima  (sob a hora)
-  static lv_point_t dLM[] = {{62, 88}, {56, 92}, {8, 92}};       // ESQ baixo (entre temp e comb)
-  static lv_point_t dRT[] = {{214, 30}, {222, 35}, {312, 35}};   // DIR cima  (sobre a tensao)
-  static lv_point_t dRM[] = {{258, 112}, {264, 116}, {312, 116}};// DIR baixo (entre tensao e velocidade)
+  static lv_point_t dLT[] = {{104, 30}, {96, 34}, {8, 34}};      // ESQ cima  (sob a hora)
+  static lv_point_t dLM[] = {{78, 82}, {72, 86}, {8, 86}};       // ESQ baixo (entre temp e comb)
+  static lv_point_t dRT[] = {{216, 30}, {224, 34}, {312, 34}};   // DIR cima  (sobre a tensao)
+  static lv_point_t dRM[] = {{242, 106}, {250, 110}, {312, 110}};// DIR baixo (entre tensao e velocidade)
   lv_point_t* divs[4] = {dLT, dLM, dRT, dRM};
   for (int i = 0; i < 4; i++) {
     lv_obj_t* ln = lv_line_create(gCockpit);
@@ -3544,10 +3556,10 @@ void montarCockpit5() {
     lv_obj_set_style_line_rounded(ln, true, 0);
   }
   // acento AZUL curtinho na ponta (perto do arco) — "aquela cor vindo do arco"
-  static lv_point_t aLT[] = {{112, 27}, {106, 30}};
-  static lv_point_t aLM[] = {{68, 85}, {62, 88}};
-  static lv_point_t aRT[] = {{208, 27}, {214, 30}};
-  static lv_point_t aRM[] = {{252, 109}, {258, 112}};
+  static lv_point_t aLT[] = {{110, 27}, {104, 30}};
+  static lv_point_t aLM[] = {{84, 79}, {78, 82}};
+  static lv_point_t aRT[] = {{210, 27}, {216, 30}};
+  static lv_point_t aRM[] = {{236, 103}, {242, 106}};
   lv_point_t* accs[4] = {aLT, aLM, aRT, aRM};
   for (int i = 0; i < 4; i++) {
     lv_obj_t* ln = lv_line_create(gCockpit);
@@ -3561,19 +3573,19 @@ void montarCockpit5() {
   lv_label_set_text(lblRpm, "0");
   lv_obj_set_style_text_font(lblRpm, &lv_font_montserrat_40, 0);
   lv_obj_set_style_text_color(lblRpm, lv_color_white(), 0);
-  lv_obj_set_width(lblRpm, 150);
+  lv_obj_set_width(lblRpm, 140);
   lv_obj_set_style_text_align(lblRpm, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_align_to(lblRpm, meter, LV_ALIGN_CENTER, 0, -8);
+  lv_obj_align_to(lblRpm, meter, LV_ALIGN_CENTER, 0, -6);
   lv_obj_t* rpmU = lv_label_create(gCockpit);   // "RPM"
   lv_label_set_text(rpmU, "RPM");
   lv_obj_set_style_text_font(rpmU, &lv_font_montserrat_14, 0);
   lv_obj_set_style_text_color(rpmU, lv_color_hex(0x90A4AE), 0);
-  lv_obj_align_to(rpmU, meter, LV_ALIGN_CENTER, 0, 22);
+  lv_obj_align_to(rpmU, meter, LV_ALIGN_CENTER, 0, 20);
   lv_obj_t* x1 = lv_label_create(gCockpit);     // "x1000" na base do mostrador
   lv_label_set_text(x1, "x1000");
   lv_obj_set_style_text_font(x1, &lv_font_montserrat_14, 0);
   lv_obj_set_style_text_color(x1, lv_color_hex(0x546E7A), 0);
-  lv_obj_align_to(x1, meter, LV_ALIGN_CENTER, 0, 52);
+  lv_obj_align_to(x1, meter, LV_ALIGN_CENTER, 0, 44);
 
   // ---------- topo-esquerda: relogio ----------
   lblHora = lv_label_create(gCockpit);
@@ -3606,19 +3618,23 @@ void montarCockpit5() {
   lv_obj_align(lblTemp, LV_ALIGN_TOP_LEFT, 18, 54);
 
   // COMBUSTIVEL embaixo da temperatura (abreviado + % + barra estreita p/ NAO tocar o mostrador)
-  rotulo(gCockpit, "COMB.", &lv_font_montserrat_14, 0x78909C, LV_ALIGN_TOP_LEFT, 8, 96);
+  rotulo(gCockpit, "COMB.", &lv_font_montserrat_14, 0x78909C, LV_ALIGN_TOP_LEFT, 8, 90);
   lblComb = lv_label_create(gCockpit);
   lv_label_set_text(lblComb, "--");
   lv_obj_set_style_text_font(lblComb, &lv_font_montserrat_28, 0);
   lv_obj_set_style_text_color(lblComb, lv_color_hex(0xFFC107), 0);
-  lv_obj_align(lblComb, LV_ALIGN_TOP_LEFT, 8, 116);
+  lv_obj_align(lblComb, LV_ALIGN_TOP_LEFT, 8, 106);
   barFuel = lv_bar_create(gCockpit);            // nivel de combustivel (estreita: x10..x64)
   lv_obj_set_size(barFuel, 54, 8);
-  lv_obj_align(barFuel, LV_ALIGN_TOP_LEFT, 10, 150);
+  lv_obj_align(barFuel, LV_ALIGN_TOP_LEFT, 10, 138);
   lv_bar_set_range(barFuel, 0, 100);
   lv_obj_set_style_bg_color(barFuel, lv_color_hex(0x16202F), LV_PART_MAIN);
   lv_obj_set_style_bg_color(barFuel, lv_color_hex(0xFFC107), LV_PART_INDICATOR);
   lv_obj_set_style_radius(barFuel, 4, LV_PART_INDICATOR);
+
+  // SAUDE DA BATERIA embaixo do combustivel (icone estilo iPhone; so aparece com o carro DESLIGADO)
+  rotulo(gCockpit, "SAUDE BAT.", &lv_font_montserrat_14, 0x78909C, LV_ALIGN_TOP_LEFT, 8, 158);
+  criarBateriaIphone(gCockpit, LV_ALIGN_TOP_LEFT, 10, 176, 46, 18, false);
 
   // ---------- coluna DIREITA: ALTERNADOR/BATERIA + tensao + VELOCIDADE ----------
   // rotulo dinamico: "ALTERNADOR" com o motor ligado, "BATERIA" desligado (atualizarCockpit
@@ -3629,35 +3645,35 @@ void montarCockpit5() {
   lv_obj_set_style_text_color(lblVoltTit, lv_color_hex(0x78909C), 0);
   lv_obj_set_width(lblVoltTit, 150);
   lv_obj_set_style_text_align(lblVoltTit, LV_TEXT_ALIGN_RIGHT, 0);
-  lv_obj_align(lblVoltTit, LV_ALIGN_TOP_RIGHT, -8, 42);
+  lv_obj_align(lblVoltTit, LV_ALIGN_TOP_RIGHT, -8, 38);
   lblVolt = lv_label_create(gCockpit);
   lv_label_set_text(lblVolt, "--V");
   lv_obj_set_style_text_font(lblVolt, &lv_font_montserrat_28, 0);
   lv_obj_set_style_text_color(lblVolt, lv_color_white(), 0);
-  lv_obj_align(lblVolt, LV_ALIGN_TOP_RIGHT, -8, 58);
+  lv_obj_align(lblVolt, LV_ALIGN_TOP_RIGHT, -8, 54);
   barTemp = lv_bar_create(gCockpit);            // nivel da tensao (reaproveita barTemp)
-  lv_obj_set_size(barTemp, 46, 7);
-  lv_obj_align(barTemp, LV_ALIGN_TOP_RIGHT, -30, 92);
+  lv_obj_set_size(barTemp, 44, 7);
+  lv_obj_align(barTemp, LV_ALIGN_TOP_RIGHT, -28, 88);
   lv_bar_set_range(barTemp, 0, 100);
   lv_obj_set_style_bg_color(barTemp, lv_color_hex(0x16202F), LV_PART_MAIN);
   lv_obj_set_style_bg_color(barTemp, lv_color_hex(0x00B0FF), LV_PART_INDICATOR);
   lv_obj_set_style_radius(barTemp, 4, LV_PART_INDICATOR);
   lv_obj_t* batIco = lv_obj_create(gCockpit);   // iconezinho de bateria (estatico)
-  lv_obj_set_size(batIco, 16, 9);
-  lv_obj_align(batIco, LV_ALIGN_TOP_RIGHT, -10, 91);
+  lv_obj_set_size(batIco, 15, 9);
+  lv_obj_align(batIco, LV_ALIGN_TOP_RIGHT, -10, 87);
   lv_obj_set_style_bg_opa(batIco, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_color(batIco, lv_color_hex(0x00B0FF), 0);
   lv_obj_set_style_border_width(batIco, 1, 0);
   lv_obj_set_style_radius(batIco, 1, 0);
   lv_obj_clear_flag(batIco, LV_OBJ_FLAG_SCROLLABLE);
 
-  rotulo(gCockpit, "VELOC.", &lv_font_montserrat_14, 0x78909C, LV_ALIGN_TOP_RIGHT, -8, 124);
+  rotulo(gCockpit, "VELOC.", &lv_font_montserrat_14, 0x78909C, LV_ALIGN_TOP_RIGHT, -8, 120);
   lblVel = lv_label_create(gCockpit);
   lv_label_set_text(lblVel, "0");
   lv_obj_set_style_text_font(lblVel, &lv_font_montserrat_40, 0);
   lv_obj_set_style_text_color(lblVel, lv_color_white(), 0);
-  lv_obj_align(lblVel, LV_ALIGN_TOP_RIGHT, -8, 140);
-  rotulo(gCockpit, "km/h", &lv_font_montserrat_14, 0x78909C, LV_ALIGN_TOP_RIGHT, -8, 184);
+  lv_obj_align(lblVel, LV_ALIGN_TOP_RIGHT, -8, 152);
+  rotulo(gCockpit, "km/h", &lv_font_montserrat_14, 0x78909C, LV_ALIGN_TOP_RIGHT, -8, 194);
 
   // ---------- rodape: DATA (centralizada, com uma linha fina em cima) ----------
   lv_obj_t* linha = lv_obj_create(gCockpit);
@@ -3682,6 +3698,7 @@ void montarCockpit() {
   lblVel = lblRpm = lblTemp = lblData = lblVoltTit = lblVolt = lblComb = lblHora = NULL;
   popup = NULL; popupMsg = NULL; popupIcon = NULL;
   batBody = NULL; batFill = NULL; batTxt = NULL; batNub = NULL;
+  rpmMarker = NULL;
   switch (cockpit_estilo) {
     case 1: montarCockpit1(); break;
     case 2: montarCockpit2(); break;
@@ -3763,6 +3780,16 @@ void atualizarCockpit(DadosCarro &d) {
       int vp = (int)((d.tensao - 11.0f) / 4.0f * 100.0f);   // 11V=0%  15V=100%
       if (vp < 0) vp = 0; if (vp > 100) vp = 100;
       lv_bar_set_value(barTemp, vp, LV_ANIM_OFF);
+    }
+    // LUZ do RPM: posiciona o marcador na arco conforme a rotacao (0..8000 -> 135..405 graus)
+    if (rpmMarker) {
+      int rr = rpm; if (rr > 8000) rr = 8000; if (rr < 0) rr = 0;
+      int ang = 135 + (int)((long)rr * 270 / 8000);
+      int dx = ((int32_t)68 * lv_trigo_sin((int16_t)((ang + 90) % 360))) >> 15;   // cos
+      int dy = ((int32_t)68 * lv_trigo_sin((int16_t)(ang % 360))) >> 15;          // sin
+      static int mkx = -999, mky = -999;
+      int nx = 160 + dx - 5, ny = 114 + dy - 5;   // -5 = metade do marcador (10px)
+      if (nx != mkx || ny != mky) { lv_obj_set_pos(rpmMarker, nx, ny); mkx = nx; mky = ny; }
     }
   }
   if (barRpm) lv_bar_set_value(barRpm, rpm, LV_ANIM_OFF);
