@@ -316,7 +316,7 @@ bool     fuel_custom  = false; // usuario configurou HYFUEL manualmente (tenta e
 // uma vez, que fica salvo).
 struct FuelBroadcast { uint32_t id; uint8_t byte; uint16_t max; const char* nome; };
 static const FuelBroadcast FUEL_TABLE[] = {
-  {0x13A, 0, 255, "Honda"},          // Honda Civic 2010 (frame 0x13A byte 0)
+  {0x465, 4, 100, "Honda Civic"},    // Civic 2010: frame 0x465 byte 4, escala 0-100 (achado com FUELFIND)
   {0x329, 1, 200, "Hyundai/Azera"},  // Azera 2010 (frame 0x329 byte 1)
 };
 static const int FUEL_TABLE_N = sizeof(FUEL_TABLE) / sizeof(FUEL_TABLE[0]);
@@ -4715,6 +4715,9 @@ void fuelCfgCarregar() {
   speedPrefs.end();
   if (hy_fuel_byte > 7) hy_fuel_byte = 7;
   if (hy_fuel_max < 1) hy_fuel_max = 1;
+  // MIGRACAO: o palpite antigo do Civic (13A byte 0) estava ERRADO. Se ficou salvo,
+  // ignora e deixa a tabela auto-detectar (agora 0x465 byte 4).
+  if (fuel_custom && hy_fuel_id == 0x13A && hy_fuel_byte == 0) fuel_custom = false;
 }
 void fuelCfgSalvar() {
   speedPrefs.begin("veican", false);
