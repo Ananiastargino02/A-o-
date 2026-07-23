@@ -295,6 +295,8 @@ volatile int      probe_pid_pedido = -1;   // comando "PID xx": sonda 1 PID e lo
 volatile bool     probe_temp_scan  = false; // comando "TEMPSCAN": testa PIDs de temperatura
 volatile bool     probe_candump    = false; // comando "CANDUMP": lista todos os frames do barramento
 volatile bool     probe_fuelwatch  = false; // comando "FUELWATCH": mostra candidatos de combustivel ao vivo
+volatile bool     probe_fuelfind   = false; // comando "FUELFIND <pct>": acha o byte do combustivel pelo nivel atual
+volatile int      fuelfind_pct     = 50;    // nivel do tanque informado (%) p/ o FUELFIND casar
 volatile bool     probe_klraw      = false; // comando "KLRAW": bytes crus da temperatura via K-line
 volatile uint16_t probe_did_ini    = 0;
 volatile uint16_t probe_did_fim    = 0;
@@ -2682,6 +2684,48 @@ void taskCAN(void* param) {
         Serial.println();
       }
       Serial.printf("[DUMP] %d IDs. Ache o byte do combustivel (tanque ~70%%: procure ~B3 se 0-255, ~46 se 0-100, ~23-2D se litros).\n", nf);
+      Serial.println("====\n");
+    }
+    if (probe_fuelfind) {
+      probe_fuelfind = false;
+      int pct = fuelfind_pct; if (pct < 1) pct = 1; if (pct > 100) pct = 100;
+      Serial.printf("\n===== FUELFIND (tanque ~%d%%) — bytes ESTAVEIS que casam com esse nivel =====\n", pct);
+      // Guarda min/max de cada byte de cada ID por ~3s. Combustivel = byte ESTAVEL
+      // (quase nao muda) e no valor do nivel. Isso descarta RPM/velocidade/pedal.
+      static struct { uint32_t id; uint8_t mn[8], mx[8], len; } ff[48];
+      int nf = 0;
+      uint32_t t0 = millis();
+      while (millis() - t0 < 3000) {
+        twai_message_t rx;
+        if (twai_receive(&rx, pdMS_TO_TICKS(20)) == ESP_OK) {
+          int idx = -1;
+          for (int i = 0; i < nf; i++) if (ff[i].id == rx.identifier) { idx = i; break; }
+          if (idx < 0 && nf < 48) { idx = nf++; ff[idx].id = rx.identifier; ff[idx].len = rx.data_length_code;
+            for (int j = 0; j < 8; j++) { ff[idx].mn[j] = 255; ff[idx].mx[j] = 0; } }
+          if (idx >= 0) for (int j = 0; j < rx.data_length_code && j < 8; j++) {
+            uint8_t v = rx.data[j];
+            if (v < ff[idx].mn[j]) ff[idx].mn[j] = v;
+            if (v > ff[idx].mx[j]) ff[idx].mx[j] = v;
+          }
+        }
+      }
+      int t255 = pct * 255 / 100, cand = 0;
+      for (int i = 0; i < nf; i++) for (int j = 0; j < ff[i].len; j++) {
+        int v = ff[i].mn[j], jit = ff[i].mx[j] - ff[i].mn[j];
+        if (jit > 4) continue;                              // so o que ficou ESTAVEL
+        bool m255 = (v > t255 - 14) && (v < t255 + 14);     // escala 0-255
+        bool m100 = (v > pct - 6) && (v < pct + 6);         // escala 0-100
+        bool mlit = (v >= pct * 40 / 100) && (v <= pct * 60 / 100) && v >= 8;  // ~litros (tanque 40-60L)
+        if (m255 || m100 || mlit) {
+          Serial.printf("[FF] %03lX.%d = %d", (unsigned long)ff[i].id, j, v);
+          if (m255) Serial.printf("  (/255=%d%%)", v * 100 / 255);
+          if (m100) Serial.printf("  (/100=%d%%)", v);
+          if (mlit) Serial.printf("  (~%dL)", v);
+          Serial.printf("  -> HYFUEL %lX %d %s\n", (unsigned long)ff[i].id, j, m100 ? "100" : "255");
+          cand++;
+        }
+      }
+      Serial.printf("[FF] %d IDs, %d candidatos. Confirme: rode FUELFIND de novo com o tanque em OUTRO nivel; o do combustivel muda junto.\n", nf, cand);
       Serial.println("====\n");
     }
     if (probe_fuelwatch) {
@@ -5319,6 +5363,12 @@ void taskSerial(void* param) {
         }
         else if (buf == "CANDUMP") { probe_candump = true; Serial.println(">>> capturando frames do barramento..."); }
         else if (buf == "FUELWATCH") { probe_fuelwatch = true; Serial.println(">>> observando candidatos de combustivel..."); }
+        else if (buf.startsWith("FUELFIND")) {   // acha o byte do combustivel: FUELFIND <pct do tanque>
+          const char* s = buf.c_str() + 8; while (*s == ' ') s++;
+          fuelfind_pct = (*s) ? atoi(s) : 50;
+          probe_fuelfind = true;
+          Serial.printf(">>> procurando o byte do combustivel p/ tanque ~%d%%...\n", fuelfind_pct);
+        }
         else if (buf.startsWith("HYFUEL ")) {   // ajusta o combustivel broadcast Hyundai: HYFUEL <id_hex> <byte> <max>
           const char* s = buf.c_str() + 7;
           hy_fuel_id = (uint32_t)strtol(s, NULL, 16) & 0x1FFFFFFF;   // #14: dentro da faixa de ID CAN
