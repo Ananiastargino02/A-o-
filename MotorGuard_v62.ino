@@ -316,8 +316,9 @@ bool     fuel_custom  = false; // usuario configurou HYFUEL manualmente (tenta e
 // uma vez, que fica salvo).
 struct FuelBroadcast { uint32_t id; uint8_t byte; uint16_t max; const char* nome; };
 static const FuelBroadcast FUEL_TABLE[] = {
-  {0x465, 4, 100, "Honda Civic"},    // Civic 2010: frame 0x465 byte 4, escala 0-100 (achado com FUELFIND)
-  {0x329, 1, 200, "Hyundai/Azera"},  // Azera 2010 (frame 0x329 byte 1)
+  {0x329, 1, 200, "Hyundai/Azera"},  // Azera 2010 (frame 0x329 byte 1) — CONFIRMADO
+  // NAO por o Civic aqui: o combustivel dele esta no B-CAN, nao no OBD (F-CAN). Alem
+  // disso o 0x465 existe TAMBEM no Azera (outra finalidade) e sequestrava a deteccao.
 };
 static const int FUEL_TABLE_N = sizeof(FUEL_TABLE) / sizeof(FUEL_TABLE[0]);
 
