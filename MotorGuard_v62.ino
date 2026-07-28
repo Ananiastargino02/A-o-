@@ -316,7 +316,8 @@ bool     fuel_custom  = false; // usuario configurou HYFUEL manualmente (tenta e
 // uma vez, que fica salvo).
 struct FuelBroadcast { uint32_t id; uint8_t byte; uint16_t max; const char* nome; };
 static const FuelBroadcast FUEL_TABLE[] = {
-  {0x329, 1, 200, "Hyundai/Azera"},  // Azera 2010 (frame 0x329 byte 1) — CONFIRMADO
+  {0x329, 5, 100, "Hyundai/Azera"},  // Azera 2010: frame 0x329 byte 5 = nivel em % (0-100).
+                                     // (byte 1 lia alto demais na metade pra baixo -> corrigido)
   // NAO por o Civic aqui: o combustivel dele esta no B-CAN, nao no OBD (F-CAN). Alem
   // disso o 0x465 existe TAMBEM no Azera (outra finalidade) e sequestrava a deteccao.
 };
@@ -4716,9 +4717,11 @@ void fuelCfgCarregar() {
   speedPrefs.end();
   if (hy_fuel_byte > 7) hy_fuel_byte = 7;
   if (hy_fuel_max < 1) hy_fuel_max = 1;
-  // MIGRACAO: o palpite antigo do Civic (13A byte 0) estava ERRADO. Se ficou salvo,
-  // ignora e deixa a tabela auto-detectar (agora 0x465 byte 4).
-  if (fuel_custom && hy_fuel_id == 0x13A && hy_fuel_byte == 0) fuel_custom = false;
+  // MIGRACAO: palpites antigos ERRADOS salvos na NVS -> ignora e usa a tabela nova.
+  //  - Civic 13A byte 0 (nem era combustivel)
+  //  - Azera 329 byte 1 (lia alto demais na metade pra baixo; o certo e o byte 5)
+  if (fuel_custom && ((hy_fuel_id == 0x13A && hy_fuel_byte == 0) ||
+                      (hy_fuel_id == 0x329 && hy_fuel_byte == 1))) fuel_custom = false;
 }
 void fuelCfgSalvar() {
   speedPrefs.begin("veican", false);
