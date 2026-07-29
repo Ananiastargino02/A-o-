@@ -3,6 +3,7 @@ class CarProfile {
   String nome;
   String marca;
   String modelo;
+  String versao; // geracao/versao escolhida na base (ex.: "G5 (2008-2012)")
   String ano;
   int kmAtual;
 
@@ -10,6 +11,7 @@ class CarProfile {
     this.nome = '',
     this.marca = '',
     this.modelo = '',
+    this.versao = '',
     this.ano = '',
     this.kmAtual = 0,
   });
@@ -20,6 +22,7 @@ class CarProfile {
         'nome': nome,
         'marca': marca,
         'modelo': modelo,
+        'versao': versao,
         'ano': ano,
         'kmAtual': kmAtual,
       };
@@ -28,6 +31,7 @@ class CarProfile {
         nome: j['nome'] ?? '',
         marca: j['marca'] ?? '',
         modelo: j['modelo'] ?? '',
+        versao: j['versao'] ?? '',
         ano: j['ano'] ?? '',
         kmAtual: j['kmAtual'] ?? 0,
       );
