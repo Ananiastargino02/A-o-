@@ -316,6 +316,7 @@ bool     fuel_custom  = false; // usuario configurou HYFUEL manualmente (tenta e
 // uma vez, que fica salvo).
 struct FuelBroadcast { uint32_t id; uint8_t byte; uint16_t max; const char* nome; };
 static const FuelBroadcast FUEL_TABLE[] = {
+  {0x2C4, 3, 100, "Toyota Corolla"}, // Corolla 2013: frame 0x2C4 byte 3 = nivel em % (0-100)
   {0x329, 5, 100, "Hyundai/Azera"},  // Azera 2010: frame 0x329 byte 5 = nivel em % (0-100).
                                      // (byte 1 lia alto demais na metade pra baixo -> corrigido)
   // NAO por o Civic aqui: o combustivel dele esta no B-CAN, nao no OBD (F-CAN). Alem
@@ -1649,13 +1650,16 @@ void detectarMetodoCombustivel() {
   }
   for (int i = 0; i < FUEL_TABLE_N; i++) {
     int hb = lerFrameByte(FUEL_TABLE[i].id, FUEL_TABLE[i].byte, 400);
-    if (hb >= 0) {
-      hy_fuel_id = FUEL_TABLE[i].id; hy_fuel_byte = FUEL_TABLE[i].byte; hy_fuel_max = FUEL_TABLE[i].max;
-      fuel_metodo = 4;
-      Serial.printf("[Fuel] metodo = broadcast %s (ID %lX byte %d /%d) = %d%%\n",
-                    FUEL_TABLE[i].nome, (unsigned long)hy_fuel_id, hy_fuel_byte, hy_fuel_max, (hb * 100) / hy_fuel_max);
-      return;
-    }
+    if (hb < 0) continue;                                  // frame nao existe nesse carro
+    int pct = (hb * 100) / FUEL_TABLE[i].max;
+    // PROTECAO anti-sequestro: so aceita se o valor escala p/ um nivel plausivel.
+    // Um frame de OUTRO carro que coincide no ID geralmente da 0% ou estoura (>105%).
+    if (pct < 2 || pct > 105) continue;
+    hy_fuel_id = FUEL_TABLE[i].id; hy_fuel_byte = FUEL_TABLE[i].byte; hy_fuel_max = FUEL_TABLE[i].max;
+    fuel_metodo = 4;
+    Serial.printf("[Fuel] metodo = broadcast %s (ID %lX byte %d /%d) = %d%%\n",
+                  FUEL_TABLE[i].nome, (unsigned long)hy_fuel_id, hy_fuel_byte, hy_fuel_max, pct);
+    return;
   }
   fuel_metodo = 3;
   Serial.println("[Fuel] metodo = indisponivel");
