@@ -52,8 +52,32 @@ class DashModern extends StatelessWidget {
           ),
           const SizedBox(height: 18),
 
-          // Velocidade em destaque
-          _speedCard(context),
+          // Velocidade tambem com ARCO (conta-giro) + numero, igual o RPM
+          Container(
+            padding: const EdgeInsets.symmetric(vertical: 18),
+            decoration: BoxDecoration(
+              color: VColors.card,
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(
+                  color: (d.velocidade >= 120 ? VColors.red : VColors.blue).withValues(alpha: 0.55),
+                  width: 1.6),
+              boxShadow: [
+                BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 14, offset: const Offset(0, 6)),
+              ],
+            ),
+            child: Center(
+              child: CircularGauge(
+                value: d.velocidade.toDouble(),
+                max: 220,
+                centro: '${d.velocidade}',
+                unidade: 'km/h',
+                rotulo: 'VELOCIDADE',
+                cor: VColors.blue,
+                redFrom: 120,
+                size: g * 0.82,
+              ),
+            ),
+          ),
           const SizedBox(height: 14),
 
           // Temperatura: valor em graus + indicador de nivel (igual no carro)
@@ -105,39 +129,6 @@ class DashModern extends StatelessWidget {
         Text(d.estado,
             style: const TextStyle(color: VColors.textFaint, fontSize: 12, letterSpacing: 1)),
       ],
-    );
-  }
-
-  Widget _speedCard(BuildContext context) {
-    final vermelho = d.velocidade >= 120;
-    final cor = vermelho ? VColors.red : VColors.blue;
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 20),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [cor.withValues(alpha: 0.18), VColors.card],
-          begin: Alignment.centerLeft,
-          end: Alignment.centerRight,
-        ),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: cor.withValues(alpha: 0.55), width: 1.6),
-      ),
-      child: Row(
-        children: [
-          Icon(Icons.speed, color: cor, size: 34),
-          const SizedBox(width: 14),
-          const Text('VELOCIDADE',
-              style: TextStyle(color: VColors.textDim, fontSize: 13, letterSpacing: 1.5)),
-          const Spacer(),
-          Text('${d.velocidade}',
-              style: TextStyle(color: cor, fontSize: 52, fontWeight: FontWeight.w800, height: 1.0)),
-          const SizedBox(width: 6),
-          const Padding(
-            padding: EdgeInsets.only(bottom: 8),
-            child: Text('km/h', style: TextStyle(color: VColors.textFaint, fontSize: 14)),
-          ),
-        ],
-      ),
     );
   }
 
