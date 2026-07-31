@@ -4,16 +4,30 @@
 build/
 .flutter-plugins
 .flutter-plugins-dependencies
-pubspec.lock
 
-# Geradas por `flutter create` (mantemos so o codigo: lib/ + pubspec + README)
-/android/
-/ios/
+# Plataformas: COMITAMOS android/ e ios/ (tem as permissoes de Bluetooth e a
+# config de build). So ignoramos os artefatos gerados dentro delas.
+/android/.gradle/
+/android/app/build/
+/android/build/
+/android/local.properties
+/android/key.properties
+/android/**/GeneratedPluginRegistrant.*
+/ios/Pods/
+/ios/.symlinks/
+/ios/Flutter/Flutter.framework
+/ios/Flutter/Flutter.podspec
+/ios/Flutter/Generated.xcconfig
+/ios/Flutter/flutter_export_environment.sh
+/ios/Runner/GeneratedPluginRegistrant.*
+/ios/**/*.mode1v3
+/ios/**/*.pbxuser
+
+# Desktop/web (nao usamos)
 /linux/
 /macos/
 /windows/
 /web/
-/test/
 
 # IDE
 .idea/

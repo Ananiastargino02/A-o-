@@ -1,0 +1,64 @@
+# ============================================================
+#  Build do app VEICAN na NUVEM (Codemagic) — sem precisar de Mac.
+#  - android-apk: gera o APK do Android (funciona JA, sem conta nenhuma).
+#  - ios-ipa:     gera o .ipa do iPhone (precisa de conta Apple Developer
+#                 conectada no Codemagic). Passo a passo em CODEMAGIC_SETUP.md.
+#
+#  IMPORTANTE: comite as pastas app_flutter/android e app_flutter/ios (elas tem
+#  as PERMISSOES de Bluetooth). O "flutter create" abaixo so PREENCHE o que faltar
+#  (nao sobrescreve o que ja existe), entao suas permissoes/config sao mantidas.
+# ============================================================
+workflows:
+  android-apk:
+    name: VEICAN Android (APK)
+    instance_type: linux_x2
+    max_build_duration: 60
+    environment:
+      flutter: stable
+    scripts:
+      - name: Preencher plataformas que faltarem
+        script: |
+          cd app_flutter
+          flutter create . --platforms=android,ios --project-name veican_app
+      - name: Dependencias
+        script: |
+          cd app_flutter
+          flutter pub get
+      - name: Build APK (release)
+        script: |
+          cd app_flutter
+          flutter build apk --release
+    artifacts:
+      - app_flutter/build/**/outputs/**/*.apk
+    # O APK aparece pra baixar no painel do Codemagic ao fim do build.
+
+  ios-ipa:
+    name: VEICAN iOS (IPA)
+    instance_type: mac_mini_m2
+    max_build_duration: 90
+    environment:
+      flutter: stable
+      ios_signing:
+        distribution_type: ad_hoc          # ad_hoc (iPhones cadastrados) ou app_store (TestFlight)
+        bundle_identifier: com.veican.app  # troque pelo Bundle ID que voce registrar na Apple
+      # A conta Apple (App Store Connect) e configurada no PAINEL do Codemagic.
+      # Veja CODEMAGIC_SETUP.md.
+    scripts:
+      - name: Preencher plataformas que faltarem
+        script: |
+          cd app_flutter
+          flutter create . --platforms=android,ios --project-name veican_app
+      - name: Dependencias
+        script: |
+          cd app_flutter
+          flutter pub get
+      - name: Baixar perfis de assinatura
+        script: |
+          xcode-project use-profiles
+      - name: Build IPA (release)
+        script: |
+          cd app_flutter
+          flutter build ipa --release \
+            --export-options-plist=/Users/builder/export_options.plist
+    artifacts:
+      - app_flutter/build/ios/ipa/*.ipa
