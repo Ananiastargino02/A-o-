@@ -1652,9 +1652,9 @@ void detectarMetodoCombustivel() {
     int hb = lerFrameByte(FUEL_TABLE[i].id, FUEL_TABLE[i].byte, 400);
     if (hb < 0) continue;                                  // frame nao existe nesse carro
     int pct = (hb * 100) / FUEL_TABLE[i].max;
-    // PROTECAO anti-sequestro: so aceita se o valor escala p/ um nivel plausivel.
-    // Um frame de OUTRO carro que coincide no ID geralmente da 0% ou estoura (>105%).
-    if (pct < 2 || pct > 105) continue;
+    // PROTECAO anti-sequestro: rejeita so quando ESTOURA (escala errada / frame de
+    // outro carro). NAO rejeita nivel baixo — tanque vazio le ~0% e e valido.
+    if (pct > 110) continue;
     hy_fuel_id = FUEL_TABLE[i].id; hy_fuel_byte = FUEL_TABLE[i].byte; hy_fuel_max = FUEL_TABLE[i].max;
     fuel_metodo = 4;
     Serial.printf("[Fuel] metodo = broadcast %s (ID %lX byte %d /%d) = %d%%\n",
@@ -2596,7 +2596,6 @@ void taskCAN(void* param) {
     int valor;
     static int falhas_rpm = 0;  // leituras seguidas sem resposta
     static uint32_t ult_resp_ok = millis();  // ultima resposta valida do CAN
-    static uint8_t temp_src = 0x05;          // fonte de temperatura (0x05 padrao ou 0x67 fallback)
 
     // ===== RPM: le e PUBLICA JA (responsivo — nao espera os PIDs lentos p/ mostrar aceleracao) =====
     STAGE_CAN("rpm");
@@ -2618,14 +2617,39 @@ void taskCAN(void* param) {
     // ===== 1 PID LENTO por ciclo, revezando (temp / tensao / combustivel) — mantem o RPM rapido =====
     STAGE_CAN("pidLento");
     switch (ciclo % 3) {
-      case 0:   // temperatura (0x05 padrao; fallback 0x67 byte B p/ HB20 etc.)
-        valor = PID_ERRO;
-        if (temp_src == 0x05) {
-          valor = lerPID_int(0x05, f_temp);
-          if (valor < -40) { uint8_t d67[8], l67 = 0; if (obdRequest(0x67, d67, &l67) && l67 >= 2) { valor = d67[1] - 40; temp_src = 0x67; Serial.println("[TEMP] 0x05 mudo -> usando PID 0x67 (byte B)"); } }
-        } else { uint8_t d67[8], l67 = 0; if (obdRequest(0x67, d67, &l67) && l67 >= 2) valor = d67[1] - 40; }
-        if (valor >= -40) { ultimo.temp_motor = valor; ult_resp_ok = millis(); }
+      case 0: {  // ===== TEMPERATURA (robusta contra alarme falso) =====
+        // Sempre tenta o 0x05 (padrao). SO cai pro 0x67 se o 0x05 sumir por MUITAS
+        // leituras seguidas (=nao suportado), NUNCA num engasgo isolado (ar-cond.,
+        // barramento cheio) — era isso que travava no 0x67 e marcava temp errada.
+        static int falha05 = 0;
+        int t = lerPID_int(0x05, f_temp);
+        if (t >= -40) {
+          falha05 = 0;
+        } else if (++falha05 >= 12) {
+          uint8_t d67[8], l67 = 0;
+          if (obdRequest(0x67, d67, &l67) && l67 >= 2) {
+            int t67 = d67[1] - 40;
+            if (t67 >= -30 && t67 <= 130) t = t67;   // aceita 0x67 so na faixa fisica
+          }
+        }
+        // FILTRO anti-glitch: coolant fica entre -30 e 130 e MUDA DEVAGAR. Um pulo
+        // isolado (>12C de uma leitura pra outra) e descartado, a menos que se
+        // repita 3x — evita o "TEMP ALTA" falso de um frame corrompido.
+        if (t >= -30 && t <= 130) {
+          static int temp_ok = -1000;
+          static uint8_t susp = 0;
+          int d = t - temp_ok; if (d < 0) d = -d;
+          if (temp_ok <= -1000 || d <= 12) {
+            temp_ok = t; susp = 0;
+            ultimo.temp_motor = t; ult_resp_ok = millis();
+          } else if (++susp >= 3) {           // pulo sustentado 3x -> aceita
+            temp_ok = t; susp = 0;
+            ultimo.temp_motor = t; ult_resp_ok = millis();
+          }
+          // senao: ignora este frame, mantem a ultima temperatura boa
+        }
         break;
+      }
       case 1: { // tensao (0x42, senao ADC)
         float v = lerPID_float(0x42, f_tensao);
         if (v < 0) v = lerTensaoADC();
@@ -3887,7 +3911,14 @@ void atualizarCockpit(DadosCarro &d) {
     alertCnt = 0;
     uint32_t km = (km_total_x100 + km_acumulado_x100) / 100;
     uint32_t ts = rtc_unix_cache;
-    if (d.temp_motor > 110) snprintf(alerts[alertCnt++], 20, "TEMP ALTA");
+    // TEMP ALTA so alarma se PERSISTIR >110C por 5s (evita alarme falso de glitch/partida).
+    {
+      static uint32_t t_quente = 0;
+      uint32_t ag = millis();
+      if (d.temp_motor > 110 && d.temp_motor <= 130) { if (t_quente == 0) t_quente = ag; }
+      else t_quente = 0;
+      if (t_quente && ag - t_quente >= 5000) snprintf(alerts[alertCnt++], 20, "TEMP ALTA");
+    }
     if (hora_nao_ajustada) snprintf(alerts[alertCnt++], 20, "AJUSTAR HORA");
     // alertas de tensao: condicao tem que persistir alguns segundos para aparecer (evita falso alarme)
     {
