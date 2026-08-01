@@ -2513,19 +2513,28 @@ void taskCAN(void* param) {
               //  - faixa sã (-30..135C)
               //  - sem salto brusco (>30C entre leituras: agua nao muda tao rapido)
               //  - com motor LIGADO (rpm>400) a agua nunca fica < 10C
-              // AUTO-DETECTA o offset (Gol/VW mandam raw=C, sem o -40). Se com o
-              // motor ligado o valor atual ficar fisicamente impossivel, alterna
-              // 40<->0 (3 leituras p/ confirmar, evita flip por glitch). Plug-and-play.
-              if (ultimo.rpm > 400) {
-                static int auto_n = 0;
-                int cur = d8[0] - kline_temp_off;
-                if (cur < -15 || cur > 135) {
-                  if (++auto_n >= 3) {
-                    kline_temp_off = (kline_temp_off == 40) ? 0 : 40;
-                    auto_n = 0;
-                    Serial.printf("[TEMP] auto-offset K-line -> A - %d\n", kline_temp_off);
-                  }
-                } else auto_n = 0;
+              // AUTO-ESCALA SEGURA. A maioria dos carros usa SAE (T = A - 40); alguns
+              // VW/Gol mandam o valor JA em C (offset 0). A troca de escala aqui NUNCA
+              // pode transformar uma temperatura sã num valor ALTO — era isso que dava
+              // alarme falso de superaquecimento: um pico de ruido virava o offset
+              // 40->0 e ai o byte cru (ex.: 128) aparecia como 128C, quando o real era
+              // 128-40 = 88C. Agora: 40->0 SO quando o SAE fica baixo demais p/ motor
+              // quente (assinatura do carro "cru em C"); 0->40 quando o cru fica alto
+              // demais e o SAE seria são (corrige o falso >120C sem mascarar over-temp
+              // real, que num carro SAE fica no offset 40 e sempre aparece).
+              if (ultimo.rpm > 600) {
+                int A = d8[0];
+                int tSae = A - 40;   // leitura se for SAE
+                int tDir = A;        // leitura se for "cru em C"
+                static int flip_lo = 0, flip_hi = 0;
+                if (kline_temp_off == 40 && tSae < 45 && tDir >= 70 && tDir <= 110) {
+                  if (++flip_lo >= 6) { kline_temp_off = 0; flip_lo = 0;
+                    Serial.println("[TEMP] escala K-line = cru (A)"); }
+                } else flip_lo = 0;
+                if (kline_temp_off == 0 && tDir > 120 && tSae >= 60 && tSae <= 110) {
+                  if (++flip_hi >= 3) { kline_temp_off = 40; flip_hi = 0;
+                    Serial.println("[TEMP] escala K-line = SAE (A-40)"); }
+                } else flip_hi = 0;
               }
               int tc = d8[0] - kline_temp_off;   // offset auto/calibravel (KTEMPOFF); padrao 40
               static int temp_bom = -1000, pend = 0, pendN = 0;
