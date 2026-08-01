@@ -116,10 +116,10 @@ struct OdoSlot;
 #define HODOMETRO_ADDR   2896  // LEGADO: so leitura p/ migrar dados antigos
 #define HODOMETRO_SIZE   16
 #define MANUTENCAO_ADDR  2912
-#define MANUTENCAO_SIZE  160
+#define MANUTENCAO_SIZE  320       // 10 itens x 32 (era 160 p/ 5). DEBUG_LOG desceu p/ caber.
 #define ITEM_SIZE        32
-#define DEBUG_LOG_ADDR   3072
-#define DEBUG_LOG_SIZE   1024
+#define DEBUG_LOG_ADDR   3232      // era 3072; +160 p/ os 5 itens novos de manutencao
+#define DEBUG_LOG_SIZE   864       // era 1024; 3232+864 = 4096 (fim da EEPROM 4KB)
 #define DEBUG_HEADER_SIZE 16
 #define DEBUG_RECORD_SIZE 32
 #define MAX_DEBUG_RECORDS ((DEBUG_LOG_SIZE - DEBUG_HEADER_SIZE) / DEBUG_RECORD_SIZE)
@@ -138,12 +138,17 @@ struct OdoSlot;
 // ============================================================
 //  Manutencao
 // ============================================================
-#define NUM_ITENS_MANUT  5
+#define NUM_ITENS_MANUT  10
 #define IDX_OLEO_MOTOR   0
 #define IDX_FILTRO_AR    1
 #define IDX_VELA         2
 #define IDX_OLEO_CAMBIO  3
 #define IDX_CORREIA      4
+#define IDX_PNEU         5
+#define IDX_FILTRO_COMB  6
+#define IDX_BOMBA_AGUA   7
+#define IDX_PASTILHA     8
+#define IDX_OLEO_FREIO   9
 #define VELA_NORMAL_KM   40000
 #define VELA_IRIDIO_KM   60000
 #define LONGPRESS_MS     4000
@@ -396,7 +401,8 @@ struct ItemManutencao {
 ItemManutencao itens_manut[NUM_ITENS_MANUT];
 
 const char* NOMES_ITENS[] = {
-  "Oleo Motor", "Filtro Ar", "Vela", "Oleo Cambio", "Correia"
+  "Oleo Motor", "Filtro Ar", "Vela", "Oleo Cambio", "Correia",
+  "Pneu", "Filtro Comb", "Bomba Agua", "Past. Freio", "Oleo Freio"
 };
 
 // ============================================================
@@ -678,7 +684,13 @@ IMG_ICONE(IMG_CAMBIO,  ICONE_CAMBIO32);
 IMG_ICONE(IMG_CORREIA, ICONE_CORREIA32);
 
 const lv_img_dsc_t* ICONES_MANUT[] = {
-  &IMG_OLEO, &IMG_FILTRO, &IMG_VELA, &IMG_CAMBIO, &IMG_CORREIA
+  &IMG_OLEO, &IMG_FILTRO, &IMG_VELA, &IMG_CAMBIO, &IMG_CORREIA,
+  // itens novos reaproveitam icones (o texto do lado diz o que e):
+  &IMG_CAMBIO,   // Pneu
+  &IMG_FILTRO,   // Filtro Combustivel
+  &IMG_OLEO,     // Bomba d'Agua
+  &IMG_VELA,     // Pastilha de Freio
+  &IMG_OLEO      // Oleo de Freio
 };
 
 // ============================================================
@@ -819,6 +831,8 @@ bool carregarDebugHeader() {
   DebugHeader h;
   eepromReadBytes(DEBUG_LOG_ADDR, (uint8_t*)&h, sizeof(h));
   if (memcmp(h.magic, "DBG1", 4) != 0) return false;
+  // indices fora da faixa = header velho/invalido (ex.: apos mudar o tamanho/endereco) -> reformata
+  if (h.head >= MAX_DEBUG_RECORDS || h.count > MAX_DEBUG_RECORDS) return false;
   debug_log_head = h.head; debug_log_count = h.count;
   return true;
 }
@@ -1012,6 +1026,11 @@ void inicializarManutencao() {
   itens_manut[IDX_VELA].km_intervalo = VELA_NORMAL_KM; itens_manut[IDX_VELA].dias_intervalo = 0;
   itens_manut[IDX_OLEO_CAMBIO].km_intervalo = 80000; itens_manut[IDX_OLEO_CAMBIO].dias_intervalo = 0;
   itens_manut[IDX_CORREIA].km_intervalo = 60000;     itens_manut[IDX_CORREIA].dias_intervalo = 1095;
+  itens_manut[IDX_PNEU].km_intervalo = 50000;        itens_manut[IDX_PNEU].dias_intervalo = 0;
+  itens_manut[IDX_FILTRO_COMB].km_intervalo = 15000; itens_manut[IDX_FILTRO_COMB].dias_intervalo = 0;
+  itens_manut[IDX_BOMBA_AGUA].km_intervalo = 40000;  itens_manut[IDX_BOMBA_AGUA].dias_intervalo = 0;   // = correia
+  itens_manut[IDX_PASTILHA].km_intervalo = 40000;    itens_manut[IDX_PASTILHA].dias_intervalo = 0;
+  itens_manut[IDX_OLEO_FREIO].km_intervalo = 60000;  itens_manut[IDX_OLEO_FREIO].dias_intervalo = 730; // 2 anos
   xSemaphoreGive(mutex_manut);
   salvarItensManutencao();
 }
@@ -3100,7 +3119,7 @@ uint8_t cockpit_estilo = 0;   // 0=Classico 1=Ferrari 2=Lamborghini 3=Tesla
 uint8_t tema_sel = 0;         // selecao na pagina de Temas
 static bool popup_shown = false;
 static bool pagina_montada_nova = false;
-static lv_obj_t *gManut, *manutSel, *manutNome[NUM_ITENS_MANUT], *manutPct[NUM_ITENS_MANUT];
+static lv_obj_t *gManut, *manutLista, *manutSel, *manutNome[NUM_ITENS_MANUT], *manutPct[NUM_ITENS_MANUT];
 static lv_obj_t *manutBar[NUM_ITENS_MANUT], *manutIcon[NUM_ITENS_MANUT];
 static lv_obj_t *manutConfirm, *manutConfirmNome, *manutConfirmSim, *manutConfirmNao;
 static lv_obj_t *gDiag, *diagTit, *diagSel, *diagM[3], *diagMsg, *diagLista, *diagSim, *diagNao;
@@ -4013,7 +4032,18 @@ void montarManut() {
   lv_obj_set_style_text_color(tit, lv_color_hex(0x4DD0E1), 0);
   lv_obj_align(tit, LV_ALIGN_TOP_MID, 0, 5);
 
-  manutSel = lv_obj_create(gManut);
+  // Lista ROLAVEL (10 itens nao cabem na tela): o titulo fica fixo em cima e a
+  // lista rola; o item selecionado e trazido pra vista em atualizarManut().
+  manutLista = lv_obj_create(gManut);
+  lv_obj_set_size(manutLista, LV_W, LV_H - 24);
+  lv_obj_set_pos(manutLista, 0, 24);
+  lv_obj_set_style_bg_opa(manutLista, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(manutLista, 0, 0);
+  lv_obj_set_style_pad_all(manutLista, 0, 0);
+  lv_obj_set_scroll_dir(manutLista, LV_DIR_VER);
+  lv_obj_set_scrollbar_mode(manutLista, LV_SCROLLBAR_MODE_OFF);
+
+  manutSel = lv_obj_create(manutLista);
   lv_obj_set_size(manutSel, 308, 38);
   lv_obj_set_style_bg_color(manutSel, lv_color_hex(0x16263A), 0);
   lv_obj_set_style_bg_opa(manutSel, LV_OPA_COVER, 0);
@@ -4021,29 +4051,29 @@ void montarManut() {
   lv_obj_set_style_border_width(manutSel, 2, 0);
   lv_obj_set_style_radius(manutSel, 6, 0);
   lv_obj_clear_flag(manutSel, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_pos(manutSel, 6, 28);
+  lv_obj_set_pos(manutSel, 6, 2);
 
   for (int i = 0; i < NUM_ITENS_MANUT; i++) {
-    int y = 28 + i * 40;
-    manutIcon[i] = lv_img_create(gManut);
+    int y = 2 + i * 40;
+    manutIcon[i] = lv_img_create(manutLista);
     lv_img_set_src(manutIcon[i], ICONES_MANUT[i]);
     lv_obj_set_style_img_recolor(manutIcon[i], lv_color_hex(0x00B0FF), 0);
     lv_obj_set_style_img_recolor_opa(manutIcon[i], LV_OPA_COVER, 0);
     lv_obj_set_pos(manutIcon[i], 8, y + 4);
 
-    manutNome[i] = lv_label_create(gManut);
+    manutNome[i] = lv_label_create(manutLista);
     lv_label_set_text(manutNome[i], NOMES_ITENS[i]);
     lv_obj_set_style_text_font(manutNome[i], &lv_font_montserrat_28, 0);
     lv_obj_set_style_text_color(manutNome[i], lv_color_hex(0x00B0FF), 0);
     lv_obj_set_pos(manutNome[i], 48, y + 2);
 
-    manutPct[i] = lv_label_create(gManut);
+    manutPct[i] = lv_label_create(manutLista);
     lv_label_set_text(manutPct[i], "--");
     lv_obj_set_style_text_font(manutPct[i], &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(manutPct[i], lv_color_hex(0x00B0FF), 0);
     lv_obj_align(manutPct[i], LV_ALIGN_TOP_RIGHT, -12, y + 6);
 
-    manutBar[i] = lv_bar_create(gManut);
+    manutBar[i] = lv_bar_create(manutLista);
     lv_obj_set_size(manutBar[i], 208, 5);
     lv_obj_set_pos(manutBar[i], 48, y + 31);
     lv_bar_set_range(manutBar[i], 0, 100);
@@ -4093,7 +4123,9 @@ void montarManut() {
 }
 
 void atualizarManut() {
-  static int last_pct[NUM_ITENS_MANUT] = { -1, -1, -1, -1, -1 };
+  static int last_pct[NUM_ITENS_MANUT];   // zerado; a rotina de reset abaixo poe tudo em -1
+  static bool init_pct = false;
+  if (!init_pct) { for (int i = 0; i < NUM_ITENS_MANUT; i++) last_pct[i] = -1; init_pct = true; }
   static int last_sel = -1;
   static uint32_t prox = 0;
   static bool last_confirm = false;
@@ -4137,7 +4169,11 @@ void atualizarManut() {
   }
 
   int sel = item_manut_selecionado; if (sel >= NUM_ITENS_MANUT) sel = 0;
-  if (sel != last_sel) { lv_obj_set_pos(manutSel, 6, 28 + sel * 40); last_sel = sel; }
+  if (sel != last_sel) {
+    lv_obj_set_pos(manutSel, 6, 2 + sel * 40);
+    lv_obj_scroll_to_view(manutNome[sel], LV_ANIM_ON);   // rola a lista p/ mostrar o selecionado
+    last_sel = sel;
+  }
 
   bool cf = manut_confirma_reset;
   if (cf != last_confirm) {
@@ -4919,6 +4955,16 @@ String executarComandoApp(String cmd) {
     return String("OK: ") + NOMES_ITENS[n] + " intervalo = " + String(dias) + " dias";
   }
   if (up == "ODORESET") { formatarHodometro(); return "OK: hodometro zerado"; }
+  if (up.startsWith("ODOSET ")) {   // define o odometro no km que o usuario quiser (via app)
+    long km = cmd.substring(7).toInt();
+    if (km < 0 || km > 2000000) return "ERRO: km invalido (0..2000000)";
+    if (xSemaphoreTake(mutex_hodometro, pdMS_TO_TICKS(200)) == pdTRUE) {
+      km_total_x100 = (uint32_t) km * 100; km_acumulado_x100 = 0;
+      xSemaphoreGive(mutex_hodometro);
+    }
+    salvarHodometro();
+    return "OK: odometro = " + String(km) + " km";
+  }
   if (up == "SPEEDHIST") return speedHistString();   // historico de velocidade (gravado no aparelho)
 
   // ===== Diagnostico (DTCs) via BLE: dispara a leitura na taskCAN e espera o resultado =====
