@@ -89,6 +89,64 @@ class _ProfileScreenState extends State<ProfileScreen> {
         content: Text('Carro novo. Cadastre os dados do carro atual.'), backgroundColor: VColors.cardHi));
   }
 
+  Future<void> _editarOdometro(BleService ble) async {
+    final ctrl = TextEditingController(text: '${ble.live?.km ?? ''}');
+    final km = await showDialog<int>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: VColors.card,
+        title: const Text('Editar odometro'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+                'Digite a quilometragem real do carro (a que aparece no painel). '
+                'O aparelho vai passar a contar a partir desse valor.',
+                style: TextStyle(color: VColors.textFaint, fontSize: 13)),
+            const SizedBox(height: 14),
+            TextField(
+              controller: ctrl,
+              autofocus: true,
+              keyboardType: TextInputType.number,
+              style: const TextStyle(color: VColors.textHi, fontSize: 20),
+              decoration: InputDecoration(
+                suffixText: 'km',
+                filled: true,
+                fillColor: VColors.cardHi,
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: VColors.line)),
+                enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: VColors.line)),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
+          FilledButton(
+            onPressed: () {
+              final v = int.tryParse(ctrl.text.replaceAll('.', '').replaceAll(RegExp(r'[^0-9]'), '').trim());
+              if (v == null || v < 0 || v > 2000000) {
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                    content: Text('Valor invalido (0 a 2.000.000 km)'), backgroundColor: VColors.red));
+                return;
+              }
+              Navigator.pop(context, v);
+            },
+            child: const Text('Gravar'),
+          ),
+        ],
+      ),
+    );
+    if (km == null || !mounted) return;
+    final resp = await ble.enviar('ODOSET $km');
+    if (!mounted) return;
+    final ok = resp.toUpperCase().contains('OK') || resp.contains('$km');
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(ok ? 'Odometro atualizado para $km km' : 'Falha ao gravar (resposta: "$resp")'),
+      backgroundColor: ok ? VColors.cardHi : VColors.red,
+    ));
+  }
+
   @override
   void dispose() {
     _nome.dispose();
@@ -223,6 +281,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ListTile(leading: const Icon(Icons.link_off, color: VColors.amber), title: const Text('Desconectar'), onTap: () => ble.desconectar())
                 else
                   ListTile(leading: const Icon(Icons.bluetooth_searching, color: VColors.cyan), title: const Text('Conectar'), onTap: () => ble.reconectar()),
+                const Divider(height: 1, color: VColors.line),
+                ListTile(
+                  leading: const Icon(Icons.speed, color: VColors.cyan),
+                  title: const Text('Editar odometro (km)'),
+                  subtitle: Text(
+                      ble.conectado
+                          ? 'Corrige a quilometragem gravada no aparelho'
+                          : 'Conecte o VEICAN para editar',
+                      style: const TextStyle(color: VColors.textFaint)),
+                  enabled: ble.conectado,
+                  onTap: ble.conectado ? () => _editarOdometro(ble) : null,
+                ),
                 const Divider(height: 1, color: VColors.line),
                 ListTile(
                   leading: const Icon(Icons.sync_alt, color: VColors.red),
