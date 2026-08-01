@@ -1372,8 +1372,13 @@ bool obdRequest(uint8_t pid, uint8_t* resp, uint8_t* len) {
     twai_message_t rx;
     if (twai_receive(&rx, pdMS_TO_TICKS(50)) == ESP_OK) {
       if (ehRespostaOBD(rx) && rx.data[1] == 0x41 && rx.data[2] == pid) {
-        *len = rx.data[0] - 2;
-        memcpy(resp, &rx.data[3], *len);
+        // SEGURANCA: rx.data[0] vem do barramento (nao confiavel). Sem limite, um
+        // frame com data[0]=0xFF faria memcpy de 253 bytes num buffer de 8 -> estouro.
+        int n = (int)rx.data[0] - 2;            // bytes de payload declarados
+        if (n < 0) n = 0;
+        if (n > 5) n = 5;                        // resp[] = 8 bytes; data[3..7] = 5 uteis
+        *len = n;
+        memcpy(resp, &rx.data[3], n);
         rx_ok++;
         return true;
       }
@@ -1433,13 +1438,13 @@ float f_tensao(uint8_t* d) { return ((d[0]*256)+d[1])/1000.0; }
 #define PID_ERRO (-1000)
 int lerPID_int(uint8_t pid, int (*formula)(uint8_t*)) {
   if (!pid_suportado[pid]) return PID_ERRO;
-  uint8_t d[8], len;
+  uint8_t d[8] = {0}; uint8_t len;   // zera: resposta curta nao deixa d[1] com lixo
   if (obdRequest(pid, d, &len)) return formula(d);
   return PID_ERRO;
 }
 float lerPID_float(uint8_t pid, float (*formula)(uint8_t*)) {
   if (!pid_suportado[pid]) return -1.0;
-  uint8_t d[8], len;
+  uint8_t d[8] = {0}; uint8_t len;
   if (obdRequest(pid, d, &len)) return formula(d);
   return -1.0;
 }
@@ -1579,7 +1584,9 @@ int lerDID22(uint32_t reqId, uint16_t did, uint8_t* out, int maxOut) {
     uint8_t pci = rx.data[0] & 0xF0;
     if (pci == 0x00 && rx.data[1] == 0x62 && rx.data[2] == dh && rx.data[3] == dl) {
       int n = (rx.data[0] & 0x0F) - 3;
-      if (n < 0) n = 0; if (n > maxOut) n = maxOut;
+      if (n < 0) n = 0;
+      if (n > maxOut) n = maxOut;
+      if (n > 4) n = 4;   // SEGURANCA: frame unico so tem data[4..7] = 4 bytes de payload
       for (int i = 0; i < n; i++) out[i] = rx.data[4 + i];
       rx_ok++; return n;
     }
@@ -4886,9 +4893,10 @@ String executarComandoApp(String cmd) {
     int sp = args.indexOf(' ');
     if (sp < 0) return "Uso: MANUT KM <n> <km>";
     int n = args.substring(0, sp).toInt();
-    uint32_t novoKm = (uint32_t) args.substring(sp + 1).toInt();
+    long km = args.substring(sp + 1).toInt();   // signed: pega negativo antes de virar uint gigante
     if (n < 0 || n >= NUM_ITENS_MANUT) return "ERRO: indice 0.." + String(NUM_ITENS_MANUT - 1);
-    if (novoKm < 100) return "ERRO: km muito baixo";
+    if (km < 100 || km > 2000000) return "ERRO: km invalido (100..2000000)";
+    uint32_t novoKm = (uint32_t) km;
     if (xSemaphoreTake(mutex_manut, pdMS_TO_TICKS(200)) != pdTRUE) return "ERRO: ocupado";
     itens_manut[n].km_intervalo = novoKm;
     xSemaphoreGive(mutex_manut);
@@ -4900,8 +4908,10 @@ String executarComandoApp(String cmd) {
     int sp = args.indexOf(' ');
     if (sp < 0) return "Uso: MANUT DIAS <n> <dias>";
     int n = args.substring(0, sp).toInt();
-    uint32_t dias = (uint32_t) args.substring(sp + 1).toInt();
+    long d = args.substring(sp + 1).toInt();
     if (n < 0 || n >= NUM_ITENS_MANUT) return "ERRO: indice 0.." + String(NUM_ITENS_MANUT - 1);
+    if (d < 0 || d > 20000) return "ERRO: dias invalido (0..20000)";
+    uint32_t dias = (uint32_t) d;
     if (xSemaphoreTake(mutex_manut, pdMS_TO_TICKS(200)) != pdTRUE) return "ERRO: ocupado";
     itens_manut[n].dias_intervalo = dias;
     xSemaphoreGive(mutex_manut);
@@ -4940,8 +4950,13 @@ String executarComandoApp(String cmd) {
   if (up.startsWith("VOLTCAL ")) {
     float real = cmd.substring(8).toFloat();
     float lido = lerTensaoADC() / voltcal;
-    if (real > 0.5 && lido > 0.5) { voltcal = real / lido; salvarConfig(); return "OK: VOLTCAL=" + String(voltcal, 4); }
-    return "ERRO: use VOLTCAL 12.6";
+    // valida faixa de bateria e limita o fator (mesma protecao do Serial) — evita
+    // que um valor ruim vindo do celular estrague a leitura/os alertas.
+    if (real < 5 || real > 20 || lido < 0.5) return "ERRO: use VOLTCAL 12.6 (5..20V)";
+    float nv = real / lido;
+    if (nv < 0.5 || nv > 2.0) return "ERRO: fator fora da faixa (0.5..2.0)";
+    voltcal = nv; salvarConfig();
+    return "OK: VOLTCAL=" + String(voltcal, 4);
   }
   if (up.startsWith("KMCAL ")) {
     String args = cmd.substring(6); args.trim();
@@ -4949,8 +4964,11 @@ String executarComandoApp(String cmd) {
     if (sp < 0) return "Uso: KMCAL <real> <mostrado>";
     float real = args.substring(0, sp).toFloat();
     float most = args.substring(sp + 1).toFloat();
-    if (real > 0.5 && most > 0.5) { km_cal = km_cal * (real / most); salvarConfig(); return "OK: KMCAL=" + String(km_cal, 4); }
-    return "ERRO: use KMCAL 52 48";
+    if (real < 0.5 || most < 0.5) return "ERRO: use KMCAL 52 48";
+    float nk = km_cal * (real / most);
+    if (nk < 0.5 || nk > 2.0) return "ERRO: fator fora da faixa (0.5..2.0)";
+    km_cal = nk; salvarConfig();
+    return "OK: KMCAL=" + String(km_cal, 4);
   }
 
   return "Cmds: STATUS | MANUT LIST | MANUT RESET <n> | MANUT KM <n> <km> | MANUT DIAS <n> <dias> | DTC LER | DTC APAGAR | VOLTCAL <v> | KMCAL <r> <m> | ODORESET";
