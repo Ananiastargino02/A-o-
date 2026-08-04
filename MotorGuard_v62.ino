@@ -1439,19 +1439,26 @@ void gravarRegistro(uint8_t tipo_evento) {
   if (xSemaphoreTake(mutex_dados, pdMS_TO_TICKS(100)) != pdTRUE) return;
   d = dados_publicos;
   xSemaphoreGive(mutex_dados);
+  // SATURACAO em cada campo: dado corrompido/fora de faixa nao pode virar lixo no
+  // log. Em especial a temperatura em int8_t: 130C sem saturar viraria -126 (um
+  // superaquecimento apareceria como negativo). Aqui prende no maximo do tipo.
+  // (Aumentar p/ int16_t exige mudar RECORD_SIZE e o layout da EEPROM -> fica p/ v8.)
   LogRecord r;
   r.timestamp = agora.unixtime();
   r.evento = tipo_evento;
-  r.rpm = (d.rpm >= 0) ? d.rpm : 0;
-  r.velocidade = (d.velocidade >= 0) ? d.velocidade : 0;
-  r.temp_motor = (d.temp_motor >= -40) ? d.temp_motor : 0;
-  r.tps = (d.tps >= 0) ? d.tps : 0;
-  r.ped_abs = (d.ped_abs >= 0) ? d.ped_abs : 0;
-  r.tensao_x10 = (d.tensao >= 0) ? (uint8_t)(d.tensao * 10) : 0;
-  r.carga = (d.carga >= 0) ? d.carga : 0;
-  r.carga_abs = (d.carga_abs >= 0) ? d.carga_abs : 0;
-  r.combust = (d.combust >= 0) ? d.combust : 0;
-  r.temp_adm = (d.temp_adm >= -40) ? d.temp_adm : 0;
+  r.rpm         = (uint16_t)constrain(d.rpm, 0, 16000);
+  r.velocidade  = (uint8_t)constrain(d.velocidade, 0, 255);
+  r.temp_motor  = (int8_t)constrain(d.temp_motor, -40, 127);   // satura em 127 (nao vira negativo)
+  r.tps         = (uint8_t)constrain(d.tps, 0, 100);
+  r.ped_abs     = (uint8_t)constrain(d.ped_abs, 0, 100);
+  float vlog = d.tensao;
+  if (!isfinite(vlog)) vlog = 0.0f;
+  vlog = constrain(vlog, 0.0f, 25.5f);
+  r.tensao_x10  = (uint8_t)lroundf(vlog * 10.0f);
+  r.carga       = (uint8_t)constrain(d.carga, 0, 100);
+  r.carga_abs   = (uint8_t)constrain(d.carga_abs, 0, 255);
+  r.combust     = (uint8_t)constrain(d.combust, 0, 100);
+  r.temp_adm    = (int8_t)constrain(d.temp_adm, -40, 127);
   uint8_t* p = (uint8_t*)&r;
   uint8_t soma = 0;
   for (int i = 0; i < 15; i++) soma += p[i];
