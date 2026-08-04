@@ -5529,8 +5529,22 @@ void cockpitEstiloSalvar() {
 void klineTempOffCarregar() {
   speedPrefs.begin("veican", true);
   kline_temp_off = speedPrefs.getInt("ktoff", 40);
+  bool migrado = speedPrefs.getBool("ktoffm1", false);
   speedPrefs.end();
   if (kline_temp_off < -60 || kline_temp_off > 100) kline_temp_off = 40;
+  // MIGRACAO (uma vez so): a auto-troca antiga podia deixar offset 0 GRAVADO na NVS,
+  // e como isso sobrevive a regravacao do firmware, a temp continuava mostrando o
+  // byte cru (ex.: 105 em vez de 65). O PID 05 padrao e A-40, entao um 0 salvo quase
+  // sempre e engano -> reseta pra 40 UMA vez. Carro raw-em-C (raro): dono roda
+  // KTEMPOFF 0 de novo (a flag ja estara setada, entao nao reseta mais).
+  if (!migrado) {
+    if (kline_temp_off == 0) kline_temp_off = 40;
+    speedPrefs.begin("veican", false);
+    speedPrefs.putInt("ktoff", kline_temp_off);
+    speedPrefs.putBool("ktoffm1", true);
+    speedPrefs.end();
+    Serial.printf("[TEMP] migracao offset K-line -> %d (era 0 salvo do bug antigo)\n", kline_temp_off);
+  }
 }
 void klineTempOffSalvar() {
   speedPrefs.begin("veican", false);
