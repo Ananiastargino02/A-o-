@@ -5021,6 +5021,8 @@ void atualizarTemas() {
 // ============================================================
 //  v7: Tela HISTORICO (ultimos eventos com data/hora) - o "relatorio pro mecanico"
 // ============================================================
+static int hist_last_n = -1;   // controla o redesenho da tela de historico
+
 const char* evtTipoTexto(uint8_t t) {
   switch (t) {
     case 0: return "Codigo (DTC)";
@@ -5074,12 +5076,12 @@ void montarHistorico() {
   lv_obj_set_style_text_color(histLista, lv_color_hex(0xCFD8DC), 0);
   lv_label_set_long_mode(histLista, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(histLista, LV_W - 40);
+  hist_last_n = -1;   // forca o atualizarHistorico a redesenhar na label nova
 }
 
 void atualizarHistorico() {
-  static int last_n = -1;
-  if (evt_n == last_n) return;       // so redesenha quando muda
-  last_n = evt_n;
+  if (evt_n == hist_last_n) return;  // so redesenha quando muda (ou quando a pagina e remontada)
+  hist_last_n = evt_n;
   static char txt[EVT_HIST_N * 90];
   txt[0] = 0;
   if (evt_n == 0) {
