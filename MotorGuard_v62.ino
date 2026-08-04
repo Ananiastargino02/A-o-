@@ -6256,8 +6256,11 @@ void taskSerial(void* param) {
         else if (buf == "DEBUG") dumpDebugLog();
         else if (buf == "DEBUGRESET SIM") { formatarDebugLog(); Serial.println(">>> Debug log limpo"); }
         else if (buf == "DEBUGRESET") Serial.println(">>> Apaga o log de debug. Confirme com: DEBUGRESET SIM");
-        else if (buf == "FUEL") { probe_pedir_fuel = true; Serial.println(">>> lendo 0x2F..."); }
         else if (buf == "SPEEDHIST") Serial.print(speedHistString());
+#if !MODO_COMERCIAL
+        // ===== COMANDOS DE ENGENHARIA (transmitem no barramento / varrem / apagam
+        //  DTC / mudam config). Na versao de venda (MODO_COMERCIAL 1) NEM COMPILAM. =====
+        else if (buf == "FUEL") { probe_pedir_fuel = true; Serial.println(">>> lendo 0x2F..."); }
         else if (buf == "TEMPSCAN") { probe_temp_scan = true; Serial.println(">>> procurando o PID de temperatura..."); }
         else if (buf == "KLRAW") { probe_klraw = true; Serial.println(">>> dump cru da temperatura K-line..."); }
         else if (buf.startsWith("KTEMPOFF")) {   // calibra offset temp K-line: "KTEMPOFF 0" (VW puro) ou "KTEMPOFF 40" (padrao)
@@ -6375,6 +6378,7 @@ void taskSerial(void* param) {
           probe_pedir_m22 = true;
         }
         else if (buf.startsWith("M22 ")) { probe_did_ini = probe_did_fim = (uint16_t)strtol(buf.c_str() + 4, NULL, 16); probe_pedir_m22 = true; }
+#endif  // !MODO_COMERCIAL (fim dos comandos de engenharia)
         else if (buf.length() > 0) Serial.printf(">>> Desconhecido: '%s'\n", buf.c_str());
         buf = "";
       } else if (buf.length() < 128) buf += c;   // #5: limita o comando (descarta o excesso, nao cresce sem fim)
