@@ -281,6 +281,9 @@ volatile bool alerta_alternador_ativo = false;
 volatile bool alerta_bateria_prev = false;   // bateria de repouso caindo ao longo dos dias
 volatile int  bateria_semanas_est = 0;       // estimativa de semanas ate nao dar partida (0=sem estimativa)
 volatile bool g_primeiro_uso = false;        // v7 - primeiro boot -> mostra onboarding guiado
+// H7 - contadores de diagnostico de campo (persistem na NVS namespace "stats")
+uint32_t g_boot_count = 0, g_brownout_count = 0, g_wdt_count = 0, g_panic_count = 0;
+volatile uint32_t g_busoff_count = 0;        // recuperacoes de bus-off (RAM, zera no boot)
 
 volatile uint8_t item_manut_selecionado = 0;
 volatile bool vela_iridio = false;
@@ -2980,6 +2983,7 @@ void taskCAN(void* param) {
     if (twai_get_status_info(&status) == ESP_OK) {
       if (status.state == TWAI_STATE_BUS_OFF) {
         Serial.println("[CAN] BUS-OFF! recuperando...");
+        g_busoff_count++;   // H7: contabiliza p/ diagnostico (STATS)
         debugLog(2, "CAN BUS-OFF", status.tx_error_counter, status.rx_error_counter);
         twai_initiate_recovery();
         vTaskDelay(pdMS_TO_TICKS(200));
@@ -5827,6 +5831,23 @@ void taskBotoes(void* param);
 // xTaskGetHandle por nome).
 TaskHandle_t g_hCAN = NULL, g_hTela = NULL;
 
+// H7: registra o motivo do boot em contadores persistentes (diagnostico de campo).
+void contadoresBootRegistrar(esp_reset_reason_t r) {
+  Preferences p;
+  if (!p.begin("stats", false)) return;
+  g_boot_count = p.getULong("bc", 0) + 1;  p.putULong("bc", g_boot_count);
+  g_brownout_count = p.getULong("bo", 0);
+  g_wdt_count = p.getULong("wd", 0);
+  g_panic_count = p.getULong("pn", 0);
+  if (r == ESP_RST_BROWNOUT) { g_brownout_count++; p.putULong("bo", g_brownout_count); }
+  if (r == ESP_RST_TASK_WDT || r == ESP_RST_INT_WDT || r == ESP_RST_WDT) { g_wdt_count++; p.putULong("wd", g_wdt_count); }
+  if (r == ESP_RST_PANIC) { g_panic_count++; p.putULong("pn", g_panic_count); }
+  p.end();
+  Serial.printf("[STATS] boot#%lu brownout=%lu wdt=%lu panic=%lu\n",
+                (unsigned long)g_boot_count, (unsigned long)g_brownout_count,
+                (unsigned long)g_wdt_count, (unsigned long)g_panic_count);
+}
+
 // MODO DE FALHA SEGURA: chamado quando algo essencial nao pode ser criado
 // (mutex/tarefa) ou uma corrupcao grave e detectada. Silencia o CAN e PARA aqui,
 // sem reiniciar (evita loop de boot). delay() = vTaskDelay -> alimenta o WDT.
@@ -5850,6 +5871,7 @@ void setup() {
   analogSetPinAttenuation(PIN_VBAT, ADC_11db);
   esp_reset_reason_t reset_reason = esp_reset_reason();
   esp_sleep_wakeup_cause_t wake_cause = esp_sleep_get_wakeup_cause();
+  contadoresBootRegistrar(reset_reason);   // H7: conta boot/brownout/wdt/panic na NVS
   Serial.println("\n=== " FIRMWARE_NOME " v" FIRMWARE_VERSION " LVGL ===");
   const char* reset_str[] = {"UNKNOWN","POWERON","EXT","SW","PANIC","INT_WDT","TASK_WDT","WDT","DEEPSLEEP","BROWNOUT","SDIO"};
   Serial.printf("[Boot] reset_reason=%s wake=%d\n", (reset_reason < 11) ? reset_str[reset_reason] : "?", wake_cause);
@@ -6257,6 +6279,9 @@ void taskSerial(void* param) {
         else if (buf == "DEBUGRESET SIM") { formatarDebugLog(); Serial.println(">>> Debug log limpo"); }
         else if (buf == "DEBUGRESET") Serial.println(">>> Apaga o log de debug. Confirme com: DEBUGRESET SIM");
         else if (buf == "SPEEDHIST") Serial.print(speedHistString());
+        else if (buf == "STATS") Serial.printf(">>> boot#%lu brownout=%lu wdt=%lu panic=%lu busoff=%lu\n",
+                   (unsigned long)g_boot_count, (unsigned long)g_brownout_count, (unsigned long)g_wdt_count,
+                   (unsigned long)g_panic_count, (unsigned long)g_busoff_count);
 #if !MODO_COMERCIAL
         // ===== COMANDOS DE ENGENHARIA (transmitem no barramento / varrem / apagam
         //  DTC / mudam config). Na versao de venda (MODO_COMERCIAL 1) NEM COMPILAM. =====
