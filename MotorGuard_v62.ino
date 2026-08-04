@@ -909,6 +909,7 @@ const char* gravidadeTexto(uint8_t g) {
 //  (poucos bytes, gravacao rara -> nao desgasta a flash).
 // ============================================================
 bool fs_ok = false;
+bool fs_corrompido = false;   // montou depois de ja ter formatado -> suspeita de corrupcao
 
 // ---- Tendencia de bateria (tensao de REPOUSO, 1 amostra/dia) ----
 #define VBAT_HIST_N 30
@@ -928,24 +929,77 @@ static const char* EVT_FILE = "/evt.bin";
 
 static uint32_t agoraTS() { return rtc_ok ? rtcNow().unixtime() : (millis() / 1000); }
 
+// CRC32 (poly refletido 0xEDB88320) - deteta troca de bytes, rajadas, etc.
+// (a soma de 8 bits usada na EEPROM e fraca; nos arquivos usamos CRC32.)
+static uint32_t crc32_calc(const uint8_t* d, size_t n) {
+  uint32_t c = 0xFFFFFFFFUL;
+  for (size_t i = 0; i < n; i++) {
+    c ^= d[i];
+    for (int k = 0; k < 8; k++) c = (c >> 1) ^ (0xEDB88320UL & (uint32_t)(-(int32_t)(c & 1)));
+  }
+  return c ^ 0xFFFFFFFFUL;
+}
+
+struct FsHdr { uint32_t magic; uint16_t versao; uint16_t n; uint16_t extra; uint16_t rsv; uint32_t crc; } __attribute__((packed));
+#define FS_MAGIC_VBAT 0x31544256UL  // "VBT1"
+#define FS_MAGIC_EVT  0x31545645UL  // "EVT1"
+
+// Gravacao ATOMICA: escreve no .tmp, move o atual p/ .bak, renomeia o .tmp p/
+// definitivo. Uma queda de energia nunca destroi o unico arquivo valido.
+static bool fsSaveAtomic(const char* path, uint32_t magic, uint16_t ver, uint16_t n, uint16_t extra,
+                         const uint8_t* payload, size_t plen) {
+  if (!fs_ok) return false;
+  char tmp[28], bak[28];
+  snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+  snprintf(bak, sizeof(bak), "%s.bak", path);
+  FsHdr h; h.magic = magic; h.versao = ver; h.n = n; h.extra = extra; h.rsv = 0;
+  h.crc = crc32_calc(payload, plen);
+  File f = LittleFS.open(tmp, "w");
+  if (!f) return false;
+  bool ok = ((size_t)f.write((uint8_t*)&h, sizeof(h)) == sizeof(h));
+  if (ok && plen) ok = ((size_t)f.write(payload, plen) == plen);
+  f.flush(); f.close();
+  if (!ok) { LittleFS.remove(tmp); return false; }
+  LittleFS.remove(bak);
+  if (LittleFS.exists(path)) LittleFS.rename(path, bak);
+  if (!LittleFS.rename(tmp, path)) {
+    if (LittleFS.exists(bak)) LittleFS.rename(bak, path);   // restaura o anterior
+    return false;
+  }
+  return true;
+}
+// Le e VALIDA (magic + CRC). Se o arquivo principal estiver ruim, tenta o .bak.
+static bool fsLoadValid(const char* path, uint32_t magic, FsHdr& h, uint8_t* payload, size_t plenMax, size_t* plenOut) {
+  char bak[28]; snprintf(bak, sizeof(bak), "%s.bak", path);
+  const char* tents[2] = { path, bak };
+  for (int t = 0; t < 2; t++) {
+    const char* p = tents[t];
+    if (!LittleFS.exists(p)) continue;
+    File f = LittleFS.open(p, "r");
+    if (!f) continue;
+    size_t sz = f.size();
+    if (sz < sizeof(FsHdr) || sz - sizeof(FsHdr) > plenMax) { f.close(); continue; }
+    size_t plen = sz - sizeof(FsHdr);
+    bool ok = ((size_t)f.read((uint8_t*)&h, sizeof(h)) == sizeof(h)) && h.magic == magic;
+    if (ok) ok = ((size_t)f.read(payload, plen) == plen);
+    f.close();
+    if (!ok) continue;
+    if (crc32_calc(payload, plen) != h.crc) continue;   // CRC nao bate -> arquivo corrompido
+    *plenOut = plen;
+    return true;
+  }
+  return false;
+}
+
 void vbatLoad() {
   vbat_n = 0;
-  if (!fs_ok || !LittleFS.exists(VBAT_FILE)) return;
-  File f = LittleFS.open(VBAT_FILE, "r");
-  if (!f) return;
-  uint8_t n = 0; f.read(&n, 1);
-  if (n > VBAT_HIST_N) n = VBAT_HIST_N;
-  int lidos = f.read((uint8_t*)vbat_hist, (size_t)n * sizeof(VbatSample));
-  if (lidos == (int)(n * sizeof(VbatSample))) vbat_n = n;
-  f.close();
+  FsHdr h; size_t plen;
+  if (!fsLoadValid(VBAT_FILE, FS_MAGIC_VBAT, h, (uint8_t*)vbat_hist, sizeof(vbat_hist), &plen)) return;
+  uint16_t n = (h.n > VBAT_HIST_N) ? VBAT_HIST_N : h.n;
+  if (plen >= (size_t)n * sizeof(VbatSample)) vbat_n = (uint8_t)n;
 }
-void vbatSave() {
-  if (!fs_ok) return;
-  File f = LittleFS.open(VBAT_FILE, "w");
-  if (!f) return;
-  f.write(&vbat_n, 1);
-  f.write((uint8_t*)vbat_hist, (size_t)vbat_n * sizeof(VbatSample));
-  f.close();
+void vbatSave() {   // chamada sempre com mutex_fs ja tomado (por vbatRegistrar)
+  fsSaveAtomic(VBAT_FILE, FS_MAGIC_VBAT, 1, vbat_n, 0, (uint8_t*)vbat_hist, (size_t)vbat_n * sizeof(VbatSample));
 }
 // grava 1 amostra de tensao de repouso (chamar no maximo 1x/dia)
 void vbatRegistrar(uint16_t mv) {
@@ -961,40 +1015,34 @@ void vbatRegistrar(uint16_t mv) {
   if (mutex_fs) xSemaphoreGive(mutex_fs);
 }
 // tendencia: quantos mV/dia a bateria de repouso esta caindo (0 se poucos dados).
-// negativo = enfraquecendo. Usa a 1a metade vs a 2a metade das amostras.
+// negativo = enfraquecendo. Le sob mutex (copia e libera) p/ nao pegar dado a meio.
 int vbatTendenciaMvPorDia() {
-  if (vbat_n < 6) return 0;
-  int meio = vbat_n / 2;
+  VbatSample cp[VBAT_HIST_N]; uint8_t n;
+  if (mutex_fs && xSemaphoreTake(mutex_fs, pdMS_TO_TICKS(100)) != pdTRUE) return 0;
+  n = vbat_n; memcpy(cp, vbat_hist, sizeof(cp));
+  if (mutex_fs) xSemaphoreGive(mutex_fs);
+  if (n < 6) return 0;
+  int meio = n / 2;
   long soma1 = 0, soma2 = 0;
-  for (int i = 0; i < meio; i++) soma1 += vbat_hist[i].mv;
-  for (int i = meio; i < vbat_n; i++) soma2 += vbat_hist[i].mv;
+  for (int i = 0; i < meio; i++) soma1 += cp[i].mv;
+  for (int i = meio; i < n; i++) soma2 += cp[i].mv;
   int med1 = soma1 / meio;
-  int med2 = soma2 / (vbat_n - meio);
-  uint32_t dt = vbat_hist[vbat_n - 1].ts - vbat_hist[0].ts;
+  int med2 = soma2 / (n - meio);
+  uint32_t dt = cp[n - 1].ts - cp[0].ts;
   int dias = dt / 86400; if (dias < 1) dias = 1;
   return (med2 - med1) / dias;   // mV por dia (negativo = caindo)
 }
 
 void evtLoad() {
   evt_n = 0; evt_head = 0;
-  if (!fs_ok || !LittleFS.exists(EVT_FILE)) return;
-  File f = LittleFS.open(EVT_FILE, "r");
-  if (!f) return;
-  f.read(&evt_n, 1);
-  f.read((uint8_t*)&evt_head, 2);
-  if (evt_n > EVT_HIST_N) evt_n = EVT_HIST_N;
-  if (evt_head >= EVT_HIST_N) evt_head = 0;
-  f.read((uint8_t*)evt_hist, sizeof(evt_hist));
-  f.close();
+  FsHdr h; size_t plen;
+  if (!fsLoadValid(EVT_FILE, FS_MAGIC_EVT, h, (uint8_t*)evt_hist, sizeof(evt_hist), &plen)) return;
+  if (plen != sizeof(evt_hist)) return;
+  evt_n = (h.n > EVT_HIST_N) ? EVT_HIST_N : (uint8_t)h.n;
+  evt_head = (h.extra >= EVT_HIST_N) ? 0 : h.extra;
 }
-void evtSave() {
-  if (!fs_ok) return;
-  File f = LittleFS.open(EVT_FILE, "w");
-  if (!f) return;
-  f.write(&evt_n, 1);
-  f.write((uint8_t*)&evt_head, 2);
-  f.write((uint8_t*)evt_hist, sizeof(evt_hist));
-  f.close();
+void evtSave() {   // chamada sempre com mutex_fs ja tomado (por evtRegistrar)
+  fsSaveAtomic(EVT_FILE, FS_MAGIC_EVT, 1, evt_n, evt_head, (uint8_t*)evt_hist, sizeof(evt_hist));
 }
 // registra um evento no historico (ring dos ultimos EVT_HIST_N)
 void evtRegistrar(uint8_t tipo, int16_t v, const char* cod) {
@@ -1008,16 +1056,38 @@ void evtRegistrar(uint8_t tipo, int16_t v, const char* cod) {
   evtSave();
   if (mutex_fs) xSemaphoreGive(mutex_fs);
 }
-// devolve o evento 'k' (0 = mais recente). false se nao existir.
+// devolve o evento 'k' (0 = mais recente). Le sob mutex (copia rapida e libera).
 bool evtGet(int k, Evento& out) {
-  if (k < 0 || k >= evt_n) return false;
-  int idx = (evt_head - 1 - k + EVT_HIST_N * 2) % EVT_HIST_N;
-  out = evt_hist[idx];
-  return true;
+  bool ok = false;
+  if (mutex_fs && xSemaphoreTake(mutex_fs, pdMS_TO_TICKS(100)) != pdTRUE) return false;
+  if (k >= 0 && k < evt_n) {
+    int idx = (evt_head - 1 - k + EVT_HIST_N * 2) % EVT_HIST_N;
+    out = evt_hist[idx];
+    ok = true;
+  }
+  if (mutex_fs) xSemaphoreGive(mutex_fs);
+  return ok;
 }
 
 void flashStorageInit() {
-  fs_ok = LittleFS.begin(true);   // true = formata se nao conseguir montar (1a vez)
+  // NAO formata sozinho na 1a falha (era begin(true)): uma corrupcao temporaria por
+  // queda de tensao apagaria o historico. Estrategia: monta; se falhar, tenta de novo;
+  // so formata na PRIMEIRA vida do aparelho (flag na NVS). Depois disso, falha de
+  // montagem = suspeita de corrupcao -> roda sem historico e tenta no proximo boot.
+  fs_ok = LittleFS.begin(false);
+  if (!fs_ok) { delay(50); fs_ok = LittleFS.begin(false); }   // falha transitoria
+  if (!fs_ok) {
+    Preferences fsp; fsp.begin("veican", false);
+    bool jaFormatou = fsp.getBool("fsinit", false);
+    if (!jaFormatou) {   // particao virgem (1o uso) -> formata UMA vez, controlado
+      Serial.println("[FS] 1o uso: formatando a particao de dados");
+      if (LittleFS.format() && LittleFS.begin(false)) { fs_ok = true; fsp.putBool("fsinit", true); }
+    } else {
+      fs_corrompido = true;   // ja formatou antes e agora falhou -> preserva p/ diagnostico
+      Serial.println("[FS] >>> montagem falhou (ja formatado antes): SUSPEITA DE CORRUPCAO. Sem historico esta sessao.");
+    }
+    fsp.end();
+  }
   Serial.printf("[FS] LittleFS %s\n", fs_ok ? "montado" : "FALHOU");
   if (fs_ok) { vbatLoad(); evtLoad(); Serial.printf("[FS] vbat=%d amostras, evt=%d eventos\n", vbat_n, evt_n); }
 }
