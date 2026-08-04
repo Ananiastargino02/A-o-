@@ -280,6 +280,7 @@ volatile bool alerta_alternador_ativo = false;
 // v7 - alertas PREDITIVOS (tendencia, nao so o instante)
 volatile bool alerta_bateria_prev = false;   // bateria de repouso caindo ao longo dos dias
 volatile int  bateria_semanas_est = 0;       // estimativa de semanas ate nao dar partida (0=sem estimativa)
+volatile bool g_primeiro_uso = false;        // v7 - primeiro boot -> mostra onboarding guiado
 
 volatile uint8_t item_manut_selecionado = 0;
 volatile bool vela_iridio = false;
@@ -5109,6 +5110,74 @@ void atualizarHistorico() {
   lv_label_set_text(histLista, txt);
 }
 
+// ============================================================
+//  v7: SPLASH + ONBOARDING (primeiro boot). Rodam DENTRO da taskTela, antes
+//  do loop principal, alimentando o watchdog (hb_tela) e o LVGL.
+// ============================================================
+static void telaEspera(uint32_t ms) {
+  uint32_t t0 = millis();
+  while (millis() - t0 < ms) { hb_tela = millis(); lv_timer_handler(); vTaskDelay(pdMS_TO_TICKS(30)); }
+}
+
+// splash rapido com o logo (<2s) - todo boot
+void mostrarSplash() {
+  lv_obj_t* scr = lv_scr_act();
+  lv_obj_clean(scr);
+  lv_obj_set_style_bg_color(scr, lv_color_hex(0x05070D), 0);
+  lv_obj_t* logo = lv_label_create(scr);
+  lv_label_set_text(logo, FIRMWARE_NOME);
+  lv_obj_set_style_text_font(logo, &lv_font_montserrat_40, 0);
+  lv_obj_set_style_text_color(logo, lv_color_hex(0x4DD0E1), 0);
+  lv_obj_align(logo, LV_ALIGN_CENTER, 0, -8);
+  lv_obj_t* ver = lv_label_create(scr);
+  lv_label_set_text(ver, "v" FIRMWARE_VERSION);
+  lv_obj_set_style_text_font(ver, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(ver, lv_color_hex(0x546E7A), 0);
+  lv_obj_align(ver, LV_ALIGN_CENTER, 0, 30);
+  telaEspera(1500);
+  lv_obj_clean(scr);
+}
+
+// onboarding guiado - so no primeiro uso
+void rodarOnboarding() {
+  lv_obj_t* scr = lv_scr_act();
+  lv_obj_clean(scr);
+  lv_obj_set_style_bg_color(scr, lv_color_hex(0x05070D), 0);
+  lv_obj_t* logo = lv_label_create(scr);
+  lv_label_set_text(logo, FIRMWARE_NOME);
+  lv_obj_set_style_text_font(logo, &lv_font_montserrat_40, 0);
+  lv_obj_set_style_text_color(logo, lv_color_hex(0x4DD0E1), 0);
+  lv_obj_align(logo, LV_ALIGN_TOP_MID, 0, 40);
+  lv_obj_t* msg = lv_label_create(scr);
+  lv_obj_set_style_text_font(msg, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(msg, lv_color_white(), 0);
+  lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(msg, LV_W - 40);
+  lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(msg, LV_ALIGN_CENTER, 0, 20);
+
+  lv_label_set_text(msg, "Bem-vindo!\nDetectando o carro...");
+  uint32_t t0 = millis();
+  while (millis() - t0 < 8000 && !obd_ok && !kline_ativo) { hb_tela = millis(); lv_timer_handler(); vTaskDelay(pdMS_TO_TICKS(50)); }
+  if (obd_ok) {
+    lv_obj_set_style_text_color(msg, lv_color_hex(0x69F0AE), 0);
+    lv_label_set_text(msg, "Protocolo CAN OK\nLendo seu carro...");
+  } else if (kline_ativo) {
+    lv_obj_set_style_text_color(msg, lv_color_hex(0x69F0AE), 0);
+    lv_label_set_text(msg, "Protocolo K-line OK\nLendo seu carro...");
+  } else {
+    lv_obj_set_style_text_color(msg, lv_color_hex(0xFFC107), 0);
+    lv_label_set_text(msg, "Ligue o carro na\ntomada OBD e de partida");
+  }
+  telaEspera(2500);
+  if (obd_ok || kline_ativo) {
+    lv_obj_set_style_text_color(msg, lv_color_hex(0x69F0AE), 0);
+    lv_label_set_text(msg, "Tudo certo!\nSeu carro esta pronto.");
+    telaEspera(1800);
+  }
+  lv_obj_clean(scr);
+}
+
 void construirPagina(uint8_t pag) {
   lv_obj_clean(lv_scr_act());
   lv_obj_set_style_bg_color(lv_scr_act(), lv_color_hex(0x05070D), 0);
@@ -5142,6 +5211,10 @@ void taskTela(void* param) {
   lv_disp_drv_init(&dd);
   dd.hor_res = LV_W; dd.ver_res = LV_H; dd.flush_cb = my_disp_flush; dd.draw_buf = &draw_buf;
   lv_disp_drv_register(&dd);
+
+  // v7: splash (logo) + onboarding no primeiro uso, antes do cockpit.
+  mostrarSplash();
+  if (g_primeiro_uso) rodarOnboarding();
 
   uint8_t pagina_render = 255;
   bool standby_ativo = false;
@@ -5614,6 +5687,13 @@ void setup() {
   cockpitEstiloCarregar();   // estilo do painel escolhido
   klineTempOffCarregar();    // calibracao do offset de temperatura K-line
   fuelCfgCarregar();         // config do combustivel broadcast (HYFUEL) salva
+
+  // v7: primeiro uso? le e ja marca (single-thread aqui no setup, sem corrida).
+  // O onboarding e so visual; se faltar energia no meio, nao mostra de novo (ok).
+  speedPrefs.begin("veican", true);
+  g_primeiro_uso = (speedPrefs.getInt("ob7", 0) == 0);
+  speedPrefs.end();
+  if (g_primeiro_uso) { speedPrefs.begin("veican", false); speedPrefs.putInt("ob7", 1); speedPrefs.end(); }
 
   Serial.printf("[HEAP] antes do BLE = %u bytes\n", ESP.getFreeHeap());
   initBLE();
