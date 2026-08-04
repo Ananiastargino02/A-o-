@@ -5757,7 +5757,7 @@ void setup() {
   analogSetPinAttenuation(PIN_VBAT, ADC_11db);
   esp_reset_reason_t reset_reason = esp_reset_reason();
   esp_sleep_wakeup_cause_t wake_cause = esp_sleep_get_wakeup_cause();
-  Serial.println("\n=== VEICAN v6.3 LVGL ===");
+  Serial.println("\n=== " FIRMWARE_NOME " v" FIRMWARE_VERSION " LVGL ===");
   const char* reset_str[] = {"UNKNOWN","POWERON","EXT","SW","PANIC","INT_WDT","TASK_WDT","WDT","DEEPSLEEP","BROWNOUT","SDIO"};
   Serial.printf("[Boot] reset_reason=%s wake=%d\n", (reset_reason < 11) ? reset_str[reset_reason] : "?", wake_cause);
   if (g_wdt_magic == 0x5744) {   // marcador valido (RTC_NOINIT sobrevive ao reset)
@@ -5816,6 +5816,19 @@ void setup() {
   dados_publicos = {PID_ERRO, PID_ERRO, PID_ERRO, PID_ERRO, PID_ERRO, PID_ERRO, PID_ERRO, PID_ERRO, PID_ERRO, PID_ERRO, PID_ERRO, -1.0};
   ultimo_heartbeat = millis();
 
+  // ===== H1: carrega TODAS as configs ANTES de criar as tarefas =====
+  // (evita corrida: taskTela/taskCAN liam cockpit_estilo/kline_temp_off/fuel
+  //  config enquanto o setup ainda estava carregando esses valores.)
+  speedCarregar();           // historico de velocidade (NVS)
+  cockpitEstiloCarregar();   // estilo do painel escolhido
+  klineTempOffCarregar();    // calibracao do offset de temperatura K-line
+  fuelCfgCarregar();         // config do combustivel broadcast (HYFUEL) salva
+  // primeiro uso? le e ja marca (single-thread aqui, sem corrida)
+  speedPrefs.begin("veican", true);
+  g_primeiro_uso = (speedPrefs.getInt("ob7", 0) == 0);
+  speedPrefs.end();
+  if (g_primeiro_uso) { speedPrefs.begin("veican", false); speedPrefs.putInt("ob7", 1); speedPrefs.end(); }
+
   xTaskCreatePinnedToCore(taskCAN,       "CAN",    8192, NULL, 2, NULL, 0);
   xTaskCreatePinnedToCore(taskLogger,    "Logger", 4096, NULL, 1, NULL, 0);
   xTaskCreatePinnedToCore(taskAlertas,   "Alertas",4096, NULL, 1, NULL, 0);
@@ -5825,24 +5838,12 @@ void setup() {
   xTaskCreatePinnedToCore(taskSerial,    "Serial", 4096, NULL, 1, NULL, 1);
   xTaskCreatePinnedToCore(taskBotoes,    "Botoes", 6144, NULL, 1, NULL, 1);   // prio 1; stack 6144 (era 4096): folga p/ acoes de botao (rtcAdjust/NVS) sem estourar
 
-  speedCarregar();   // historico de velocidade (NVS)
-  cockpitEstiloCarregar();   // estilo do painel escolhido
-  klineTempOffCarregar();    // calibracao do offset de temperatura K-line
-  fuelCfgCarregar();         // config do combustivel broadcast (HYFUEL) salva
-
-  // v7: primeiro uso? le e ja marca (single-thread aqui no setup, sem corrida).
-  // O onboarding e so visual; se faltar energia no meio, nao mostra de novo (ok).
-  speedPrefs.begin("veican", true);
-  g_primeiro_uso = (speedPrefs.getInt("ob7", 0) == 0);
-  speedPrefs.end();
-  if (g_primeiro_uso) { speedPrefs.begin("veican", false); speedPrefs.putInt("ob7", 1); speedPrefs.end(); }
-
   Serial.printf("[HEAP] antes do BLE = %u bytes\n", ESP.getFreeHeap());
   initBLE();
   Serial.printf("[HEAP] livre apos setup (BLE ON) = %u bytes\n", ESP.getFreeHeap());
 
-  debugLog(0, "Setup OK v63 LVGL");
-  Serial.println("=== VEICAN v6.3 pronto ===");
+  debugLog(0, "Setup OK v" FIRMWARE_VERSION);
+  Serial.println("=== " FIRMWARE_NOME " v" FIRMWARE_VERSION " pronto ===");
   Serial.println("Cmds: DUMP DEBUG FUEL VBAT | VOLTCAL <v> | KMCAL <real> <mostrado>");
   Serial.println("Destrutivos (pedem SIM): RESET ODORESET MANUTRESET DEBUGRESET");
 }
