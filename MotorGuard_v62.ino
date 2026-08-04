@@ -102,6 +102,13 @@ struct OdoSlot;
 #define MODO_COMERCIAL 0
 
 // ============================================================
+//  Versao do firmware (v7) - aparece na tela Sistema e no serial.
+//  Usada tambem pelo OTA (comparar versao antes de atualizar no campo).
+// ============================================================
+#define FIRMWARE_VERSION "7.0.0"
+#define FIRMWARE_NOME    "VEICAN"
+
+// ============================================================
 //  EEPROM Layout
 // ============================================================
 #define EEPROM_ADDR      0x57
@@ -4671,6 +4678,13 @@ void montarSistema() {
   lv_obj_set_style_text_color(hint, lv_color_hex(0x546E7A), 0);
   lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -10);
 
+  // versao do firmware (base pro OTA e pra saber o que esta gravado no campo)
+  lv_obj_t* lver = lv_label_create(gSistema);
+  lv_label_set_text(lver, FIRMWARE_NOME " v" FIRMWARE_VERSION);
+  lv_obj_set_style_text_font(lver, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(lver, lv_color_hex(0x37474F), 0);
+  lv_obj_align(lver, LV_ALIGN_TOP_RIGHT, -10, 8);
+
   sisConfirm = lv_obj_create(gSistema);
   lv_obj_set_size(sisConfirm, 280, 100);
   lv_obj_center(sisConfirm);
@@ -5249,6 +5263,7 @@ void setup() {
   Serial.setTxBufferSize(2048);
   Serial.begin(115200);
   delay(500);
+  Serial.println("\n==== " FIRMWARE_NOME " firmware v" FIRMWARE_VERSION " ====");
   analogSetPinAttenuation(PIN_VBAT, ADC_11db);
   esp_reset_reason_t reset_reason = esp_reset_reason();
   esp_sleep_wakeup_cause_t wake_cause = esp_sleep_get_wakeup_cause();

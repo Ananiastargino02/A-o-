@@ -1,0 +1,24 @@
+# ============================================================
+#  VEICAN - Tabela de particao para OTA (ESP32 WROVER-E-N8R8 = 8 MB flash)
+#
+#  Dois slots de aplicativo (app0/app1) para atualizacao pela metade:
+#  o firmware novo grava no slot ocioso; se algo der errado, volta pro
+#  slot anterior (rollback). Isso permite atualizar as unidades no campo
+#  sem recall, quando o servico de OTA/BLE chegar.
+#
+#  IMPORTANTE:
+#  - Este arquivo tem que ficar na PASTA DO SKETCH, ao lado do .ino. O core
+#    ESP32 do Arduino usa ele automaticamente (ignora o menu Partition Scheme).
+#  - 'nvs' fica em 0x9000 (mesmo offset do padrao) -> os dados ja gravados na
+#    NVS (odometro, calibracoes, prefs) SAO PRESERVADOS na 1a gravacao.
+#  - A EEPROM externa (24C32 no I2C) nao e afetada por isto.
+#  - 'spiffs' e a area de dados na flash interna (LittleFS): banco de DTC,
+#    historico de eventos e amostras de bateria (bloco 3 do v7).
+#
+#  Name,     Type, SubType,  Offset,    Size,      Flags
+nvs,        data, nvs,      0x9000,    0x5000,
+otadata,    data, ota,      0xE000,    0x2000,
+app0,       app,  ota_0,    0x10000,   0x330000,
+app1,       app,  ota_1,    0x340000,  0x330000,
+spiffs,     data, spiffs,   0x670000,  0x180000,
+coredump,   data, coredump, 0x7F0000,  0x10000,
