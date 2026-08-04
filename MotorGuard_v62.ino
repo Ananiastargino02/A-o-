@@ -5823,6 +5823,22 @@ void initBLE() {
 void taskSerial(void* param);
 void taskBotoes(void* param);
 
+// Handles das tarefas criticas (H5: guardados na criacao, sem depender de
+// xTaskGetHandle por nome).
+TaskHandle_t g_hCAN = NULL, g_hTela = NULL;
+
+// MODO DE FALHA SEGURA: chamado quando algo essencial nao pode ser criado
+// (mutex/tarefa) ou uma corrupcao grave e detectada. Silencia o CAN e PARA aqui,
+// sem reiniciar (evita loop de boot). delay() = vTaskDelay -> alimenta o WDT.
+void entrarModoFalhaSegura(const char* motivo) {
+  twai_stop();   // garante o CAN em silencio (inofensivo se nao instalado)
+  Serial.printf("\n[FALHA SEGURA] %s\n", motivo);
+  for (;;) {
+    Serial.printf("[FALHA SEGURA] %s -- reinicie o aparelho\n", motivo);
+    delay(3000);
+  }
+}
+
 void setup() {
   // Buffer TX maior p/ absorver rajadas de log sem encher (e sem travar a tarefa
   // que imprime). Combinado com o corte dos logs por ciclo (VERBOSE_CAN=0).
@@ -5850,6 +5866,10 @@ void setup() {
   mutex_debug = xSemaphoreCreateMutex();
   mutex_i2c = xSemaphoreCreateMutex();
   mutex_fs = xSemaphoreCreateMutex();
+  // H5: sem mutex nao da pra operar com seguranca (corrida garantida) -> falha segura
+  if (!mutex_dados || !mutex_hora || !mutex_hodometro || !mutex_manut ||
+      !mutex_debug || !mutex_i2c || !mutex_fs)
+    entrarModoFalhaSegura("mutex nao criado (RAM insuficiente)");
 
   Wire.begin(21, 22);
   Wire.setClock(100000);
@@ -5906,14 +5926,19 @@ void setup() {
   speedPrefs.end();
   if (g_primeiro_uso) { speedPrefs.begin("veican", false); speedPrefs.putInt("ob7", 1); speedPrefs.end(); }
 
-  xTaskCreatePinnedToCore(taskCAN,       "CAN",    8192, NULL, 2, NULL, 0);
-  xTaskCreatePinnedToCore(taskLogger,    "Logger", 4096, NULL, 1, NULL, 0);
-  xTaskCreatePinnedToCore(taskAlertas,   "Alertas",4096, NULL, 1, NULL, 0);
-  xTaskCreatePinnedToCore(taskHeartbeat, "Heart",  4096, NULL, 1, NULL, 0);
-  xTaskCreatePinnedToCore(taskTela,      "Tela",   20480, NULL, 1, NULL, 1);
-  xTaskCreatePinnedToCore(taskRTC,       "RTC",    4096, NULL, 1, NULL, 1);
-  xTaskCreatePinnedToCore(taskSerial,    "Serial", 4096, NULL, 1, NULL, 1);
-  xTaskCreatePinnedToCore(taskBotoes,    "Botoes", 6144, NULL, 1, NULL, 1);   // prio 1; stack 6144 (era 4096): folga p/ acoes de botao (rtcAdjust/NVS) sem estourar
+  // H5: valida a criacao de cada tarefa. RAM insuficiente -> falha segura em vez
+  // de seguir "meio funcionando" e crashar depois.
+  bool ok = true;
+  ok &= (xTaskCreatePinnedToCore(taskCAN,       "CAN",    8192, NULL, 2, &g_hCAN, 0) == pdPASS);
+  ok &= (xTaskCreatePinnedToCore(taskLogger,    "Logger", 4096, NULL, 1, NULL,    0) == pdPASS);
+  ok &= (xTaskCreatePinnedToCore(taskAlertas,   "Alertas",4096, NULL, 1, NULL,    0) == pdPASS);
+  ok &= (xTaskCreatePinnedToCore(taskHeartbeat, "Heart",  4096, NULL, 1, NULL,    0) == pdPASS);
+  ok &= (xTaskCreatePinnedToCore(taskTela,      "Tela",   20480,NULL, 1, &g_hTela,1) == pdPASS);
+  ok &= (xTaskCreatePinnedToCore(taskRTC,       "RTC",    4096, NULL, 1, NULL,    1) == pdPASS);
+  ok &= (xTaskCreatePinnedToCore(taskSerial,    "Serial", 4096, NULL, 1, NULL,    1) == pdPASS);
+  ok &= (xTaskCreatePinnedToCore(taskBotoes,    "Botoes", 6144, NULL, 1, NULL,    1) == pdPASS);   // stack 6144: folga p/ acoes de botao
+  if (!ok || !g_hCAN || !g_hTela)
+    entrarModoFalhaSegura("tarefa nao criada (RAM insuficiente)");
 
   Serial.printf("[HEAP] antes do BLE = %u bytes\n", ESP.getFreeHeap());
   initBLE();
