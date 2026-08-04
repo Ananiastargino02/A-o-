@@ -276,6 +276,9 @@ uint32_t reboot_wdt_tela = 0, reboot_wdt_btn = 0;  // copia p/ gravar na EEPROM 
 
 volatile bool alerta_bateria_ativo = false;
 volatile bool alerta_alternador_ativo = false;
+// v7 - alertas PREDITIVOS (tendencia, nao so o instante)
+volatile bool alerta_bateria_prev = false;   // bateria de repouso caindo ao longo dos dias
+volatile int  bateria_semanas_est = 0;       // estimativa de semanas ate nao dar partida (0=sem estimativa)
 
 volatile uint8_t item_manut_selecionado = 0;
 volatile bool vela_iridio = false;
@@ -3218,6 +3221,10 @@ void taskAlertas(void* param) {
   Serial.println("[Task Alertas] iniciada");
   vTaskDelay(pdMS_TO_TICKS(5000));
   uint32_t bat_baixa_desde = 0, alt_ruim_desde = 0;
+  // v7: memoria de borda p/ gravar cada EPISODIO uma vez no historico
+  bool bat_logado = false, alt_logado = false;
+  uint32_t temp_alta_desde = 0; bool temp_logada = false;
+  uint32_t off_desde = 0; int ultimo_dia_amostra = -1;   // amostra de bateria em repouso (1/dia)
   for (;;) {
     DadosCarro d;
     if (xSemaphoreTake(mutex_dados, pdMS_TO_TICKS(50)) == pdTRUE) { d = dados_publicos; xSemaphoreGive(mutex_dados); }
@@ -3228,15 +3235,54 @@ void taskAlertas(void* param) {
       if (bat_baixa_desde == 0) bat_baixa_desde = agora;
       else if (agora - bat_baixa_desde > 10000) {
         if (!alerta_bateria_ativo) { alerta_bateria_ativo = true; debugLog(1, "BAT FRACA", (uint16_t)(d.tensao*10)); }
+        if (!bat_logado) { evtRegistrar(2, (int16_t)(d.tensao*100), ""); bat_logado = true; }
       }
-    } else { bat_baixa_desde = 0; if (alerta_bateria_ativo) alerta_bateria_ativo = false; }
+    } else { bat_baixa_desde = 0; if (alerta_bateria_ativo) alerta_bateria_ativo = false; bat_logado = false; }
     // CORRECAO C: sobrecarga do alternador a partir de 14.5V (era 15.0V)
     if (ligado && d.tensao > 0 && (d.tensao < 12.2f || d.tensao > 14.5f)) {   // alerta so ABAIXO de 12.2V
       if (alt_ruim_desde == 0) alt_ruim_desde = agora;
       else if (agora - alt_ruim_desde > 10000) {
         if (!alerta_alternador_ativo) { alerta_alternador_ativo = true; debugLog(1, "ALT RUIM", (uint16_t)(d.tensao*10)); }
+        if (!alt_logado) { evtRegistrar(3, (int16_t)(d.tensao*100), ""); alt_logado = true; }
       }
-    } else { alt_ruim_desde = 0; if (alerta_alternador_ativo) alerta_alternador_ativo = false; }
+    } else { alt_ruim_desde = 0; if (alerta_alternador_ativo) alerta_alternador_ativo = false; alt_logado = false; }
+
+    // ===== v7: TEMPERATURA (grava o episodio no historico p/ o relatorio) =====
+    // A temp ja vem filtrada da taskCAN/K-line. Aqui so registramos o evento
+    // (o alarme visual continua na tela). Alto = >110C; superaquec = >118C.
+    if (d.temp_motor > 110 && d.temp_motor <= 135) {
+      if (temp_alta_desde == 0) temp_alta_desde = agora;
+      else if (agora - temp_alta_desde > 5000 && !temp_logada) {
+        evtRegistrar(d.temp_motor > 118 ? 4 : 1, (int16_t)d.temp_motor, "");
+        temp_logada = true;
+      }
+    } else { temp_alta_desde = 0; temp_logada = false; }
+
+    // ===== v7: TENDENCIA DE BATERIA (1 amostra de tensao de REPOUSO por dia) =====
+    // Carro desligado, tensao na faixa de repouso e assentado ha 3 min -> amostra.
+    if (!ligado && d.tensao > 10.5f && d.tensao < 13.4f) {
+      if (off_desde == 0) off_desde = agora;
+      else if (agora - off_desde > 180000UL) {
+        int diaHoje = rtc_ok ? rtcNow().day() : -2;
+        if (diaHoje != ultimo_dia_amostra) {
+          ultimo_dia_amostra = diaHoje;
+          vbatRegistrar((uint16_t)(d.tensao * 1000));
+          int trend = vbatTendenciaMvPorDia();   // mV/dia (negativo = caindo)
+          if (trend <= -30 && vbat_n >= 8) {
+            int atual_mv = vbat_hist[vbat_n - 1].mv;
+            int margem = atual_mv - 11800;        // ~11.8V: abaixo disso costuma nao dar partida
+            if (margem < 0) margem = 0;
+            int dias = margem / (-trend);
+            bateria_semanas_est = dias / 7;
+            alerta_bateria_prev = true;
+            evtRegistrar(2, (int16_t)(atual_mv / 10), "PREV");   // evento preditivo
+          } else {
+            alerta_bateria_prev = false; bateria_semanas_est = 0;
+          }
+        }
+      }
+    } else { off_desde = 0; }
+
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
 }
@@ -4229,6 +4275,12 @@ void atualizarCockpit(DadosCarro &d) {
       if (d.temp_motor > 110 && d.temp_motor <= 130) { if (t_quente == 0) t_quente = ag; }
       else t_quente = 0;
       if (t_quente && ag - t_quente >= 5000) snprintf(alerts[alertCnt++], 20, "TEMP ALTA");
+      // v7: aviso ANTECIPADO (102-110C) — heads-up antes de virar critico
+      static uint32_t t_subindo = 0;
+      if (d.temp_motor > 102 && d.temp_motor <= 110) { if (t_subindo == 0) t_subindo = ag; }
+      else t_subindo = 0;
+      if (!t_quente && t_subindo && ag - t_subindo >= 5000 && alertCnt < 6)
+        snprintf(alerts[alertCnt++], 20, "TEMP SUBINDO");
     }
     if (hora_nao_ajustada) snprintf(alerts[alertCnt++], 20, "AJUSTAR HORA");
     // alertas de tensao: condicao tem que persistir alguns segundos para aparecer (evita falso alarme)
@@ -4247,6 +4299,8 @@ void atualizarCockpit(DadosCarro &d) {
       if (t_sob && agora - t_sob >= 3000) snprintf(alerts[alertCnt++], 20, "SOBRECARGA");
       if (t_bat && agora - t_bat >= 4000) snprintf(alerts[alertCnt++], 20, "BATERIA FRACA");
     }
+    // v7: aviso PREDITIVO de bateria (tendencia de repouso caindo ao longo dos dias)
+    if (alerta_bateria_prev && alertCnt < 6) snprintf(alerts[alertCnt++], 20, "TROCAR BATERIA");
     for (int i = 0; i < NUM_ITENS_MANUT && alertCnt < 6; i++)
       if (itemVencido(i, km, ts)) snprintf(alerts[alertCnt++], 20, "TROCAR %s", NOMES_ITENS[i]);
     if (alertCnt > 0) alertIdx = alertIdx % alertCnt; else alertIdx = 0;
