@@ -694,47 +694,198 @@ const lv_img_dsc_t* ICONES_MANUT[] = {
 };
 
 // ============================================================
-//  Tabela DTCs
+//  Banco de DTCs TRADUZIDO (v7) - descricao + causa provavel + gravidade
+//  gravidade: 1 = leve (pode rodar, resolve sem pressa)
+//             2 = oficina esta semana
+//             3 = PARE / risco de quebrar o motor
+//  Fica na flash (const) - ~150 codigos ocupam ~25 KB dos 8 MB do WROVER-E.
+//  Foco: os codigos mais comuns da frota BR (VW, GM/Chevrolet, Fiat, Ford,
+//  Hyundai, Toyota, Honda, Renault) + generico OBD-II.
 // ============================================================
-struct DtcDescricao { const char* codigo; const char* descricao; };
+struct DtcInfo { const char* codigo; const char* descricao; const char* causa; uint8_t gravidade; };
 
-const DtcDescricao DTC_TABLE[] PROGMEM = {
-  {"P0171","Mistura pobre B1"},{"P0172","Mistura rica B1"},
-  {"P0174","Mistura pobre B2"},{"P0175","Mistura rica B2"},
-  {"P0300","Falha ignicao mult."},{"P0301","Falha cilindro 1"},
-  {"P0302","Falha cilindro 2"},{"P0303","Falha cilindro 3"},
-  {"P0304","Falha cilindro 4"},{"P0305","Falha cilindro 5"},
-  {"P0306","Falha cilindro 6"},
-  {"P0420","Catalisador B1"},{"P0430","Catalisador B2"},
-  {"P0130","Sonda lambda B1S1"},{"P0136","Sonda lambda B1S2"},
-  {"P0150","Sonda lambda B2S1"},{"P0156","Sonda lambda B2S2"},
-  {"P0440","Vazamento EVAP"},{"P0442","Vazam EVAP pequeno"},
-  {"P0455","Vazam EVAP grande"},{"P0456","Vazam EVAP minimo"},
-  {"P0100","Sensor MAF"},{"P0101","MAF fora faixa"},
-  {"P0102","MAF baixo"},{"P0103","MAF alto"},{"P0105","Sensor MAP"},
-  {"P0115","Sensor temp motor"},{"P0117","Temp motor baixa"},
-  {"P0118","Temp motor alta"},{"P0125","Demora pra esquentar"},
-  {"P0120","Sensor TPS"},{"P0121","TPS fora faixa"},
-  {"P0122","TPS sinal baixo"},{"P0123","TPS sinal alto"},
-  {"P0500","Sensor velocidade"},{"P0501","Vel fora faixa"},
-  {"P0201","Injetor cil 1"},{"P0202","Injetor cil 2"},
-  {"P0203","Injetor cil 3"},{"P0204","Injetor cil 4"},
-  {"P0351","Bobina cil 1"},{"P0352","Bobina cil 2"},
-  {"P0353","Bobina cil 3"},{"P0354","Bobina cil 4"},
-  {"U0100","Perda com. ECM"},{"U0101","Perda com. TCM"},
-  {"U0121","Perda com. ABS"},{"U0140","Perda com. BCM"},
-  {"P2015","Sensor coletor adm"},{"P2279","Vazam admissao"},
-  {"P0011","Variador adm"},{"P0014","Variador esc"},
-  {"P0650","Luz de injecao (MIL)"},   // Montana/GM
-  {"P1612","GM: comunicacao ECM"},{"P1613","GM: comunicacao"},{"P1614","GM: comunicacao"},
+const DtcInfo DTC_TABLE[] = {
+  // ---- Mistura / combustivel (fuel trim) ----
+  {"P0171","Mistura pobre (lado 1)","Entrada de ar falsa (mangueira/junta), bico sujo, sensor MAF sujo ou bomba fraca.",2},
+  {"P0172","Mistura rica (lado 1)","Bico vazando, sensor de oxigenio (sonda) velho, pressao de combustivel alta.",2},
+  {"P0174","Mistura pobre (lado 2)","Entrada de ar falsa, MAF sujo, pressao de combustivel baixa.",2},
+  {"P0175","Mistura rica (lado 2)","Bico vazando, sonda velha, pressao de combustivel alta.",2},
+  {"P0170","Ajuste de combustivel fora","Vazamento de ar, MAF ou sonda com problema.",2},
+  {"P0173","Ajuste de combustivel fora (lado 2)","Vazamento de ar, MAF ou sonda com problema.",2},
+  {"P0087","Pressao de combustivel baixa","Bomba fraca, filtro entupido, regulador de pressao.",2},
+  {"P0089","Regulador de pressao com defeito","Regulador ou bomba de combustivel.",2},
+  {"P018B","Sensor de pressao de combustivel","Sensor de pressao ou chicote.",2},
+  // ---- Falha de ignicao (misfire) ----
+  {"P0300","Falha de ignicao em varios cilindros","Velas/bobinas gastas, combustivel ruim, bico entupido. Trepida e gasta mais.",2},
+  {"P0301","Falha de ignicao - cilindro 1","Vela/bobina/cabo do cil.1, bico do cil.1, compressao baixa.",2},
+  {"P0302","Falha de ignicao - cilindro 2","Vela/bobina/cabo do cil.2, bico do cil.2, compressao baixa.",2},
+  {"P0303","Falha de ignicao - cilindro 3","Vela/bobina/cabo do cil.3, bico do cil.3, compressao baixa.",2},
+  {"P0304","Falha de ignicao - cilindro 4","Vela/bobina/cabo do cil.4, bico do cil.4, compressao baixa.",2},
+  {"P0305","Falha de ignicao - cilindro 5","Vela/bobina/cabo do cil.5, bico do cil.5, compressao baixa.",2},
+  {"P0306","Falha de ignicao - cilindro 6","Vela/bobina/cabo do cil.6, bico do cil.6, compressao baixa.",2},
+  {"P0313","Falha de ignicao com pouco combustivel","Abasteca; se persistir, sistema de combustivel.",1},
+  {"P0316","Falha de ignicao logo na partida","Velas/bobinas ou combustivel ruim.",2},
+  // ---- Bobinas / injetores (circuito) ----
+  {"P0351","Bobina de ignicao 1","Bobina, chicote ou conector do cil.1.",2},
+  {"P0352","Bobina de ignicao 2","Bobina, chicote ou conector do cil.2.",2},
+  {"P0353","Bobina de ignicao 3","Bobina, chicote ou conector do cil.3.",2},
+  {"P0354","Bobina de ignicao 4","Bobina, chicote ou conector do cil.4.",2},
+  {"P0201","Injetor - cilindro 1","Injetor, chicote ou conector do cil.1.",2},
+  {"P0202","Injetor - cilindro 2","Injetor, chicote ou conector do cil.2.",2},
+  {"P0203","Injetor - cilindro 3","Injetor, chicote ou conector do cil.3.",2},
+  {"P0204","Injetor - cilindro 4","Injetor, chicote ou conector do cil.4.",2},
+  {"P0205","Injetor - cilindro 5","Injetor, chicote ou conector do cil.5.",2},
+  {"P0206","Injetor - cilindro 6","Injetor, chicote ou conector do cil.6.",2},
+  {"P0261","Injetor 1 sinal baixo","Injetor ou chicote em curto/aberto.",2},
+  {"P0264","Injetor 2 sinal baixo","Injetor ou chicote em curto/aberto.",2},
+  {"P0267","Injetor 3 sinal baixo","Injetor ou chicote em curto/aberto.",2},
+  {"P0270","Injetor 4 sinal baixo","Injetor ou chicote em curto/aberto.",2},
+  // ---- Catalisador / sondas (oxigenio) ----
+  {"P0420","Catalisador fraco (lado 1)","Catalisador gasto, sonda velha ou motor queimando oleo. Raramente para o carro.",1},
+  {"P0430","Catalisador fraco (lado 2)","Catalisador gasto ou sonda velha.",1},
+  {"P0130","Sonda lambda 1 (antes do cat)","Sonda de oxigenio velha ou chicote.",1},
+  {"P0131","Sonda lambda 1 sinal baixo","Sonda, fio ou entrada de ar falsa.",1},
+  {"P0132","Sonda lambda 1 sinal alto","Sonda ou mistura rica.",1},
+  {"P0133","Sonda lambda 1 lenta","Sonda de oxigenio velha (troca).",1},
+  {"P0134","Sonda lambda 1 sem sinal","Sonda desligada, fio partido ou aquecedor da sonda.",1},
+  {"P0135","Aquecedor da sonda 1","Resistencia do aquecedor da sonda ou fusivel.",1},
+  {"P0136","Sonda lambda 2 (depois do cat)","Sonda traseira velha ou chicote.",1},
+  {"P0137","Sonda 2 sinal baixo","Sonda traseira ou fio.",1},
+  {"P0138","Sonda 2 sinal alto","Sonda traseira ou mistura.",1},
+  {"P0141","Aquecedor da sonda 2","Resistencia do aquecedor da sonda traseira.",1},
+  {"P0150","Sonda lambda 1 (lado 2)","Sonda de oxigenio ou chicote.",1},
+  {"P0155","Aquecedor da sonda (lado 2)","Aquecedor da sonda.",1},
+  {"P0156","Sonda lambda 2 (lado 2)","Sonda traseira ou chicote.",1},
+  // ---- EVAP (vapor de combustivel) ----
+  {"P0440","Vazamento no sistema de vapor (EVAP)","Tampa do tanque mal fechada, mangueira ou valvula canister.",1},
+  {"P0441","Fluxo de purga do EVAP errado","Valvula de purga (canister) presa.",1},
+  {"P0442","Vazamento pequeno no EVAP","Tampa do tanque frouxa - reaperte primeiro. Ou mangueira do canister.",1},
+  {"P0446","Ventilacao do canister","Valvula de ventilacao do canister.",1},
+  {"P0455","Vazamento grande no EVAP","Tampa do tanque aberta/ruim ou mangueira solta.",1},
+  {"P0456","Vazamento minimo no EVAP","Tampa do tanque - reaperte. Ou mangueira fina rachada.",1},
+  {"P0457","Tampa do tanque solta","Aperte a tampa do tanque ate clicar.",1},
+  // ---- Ar / admissao (MAF, MAP, IAT) ----
+  {"P0100","Sensor de fluxo de ar (MAF)","Sensor MAF sujo ou chicote.",2},
+  {"P0101","MAF fora da faixa","MAF sujo, entrada de ar falsa ou filtro de ar entupido.",2},
+  {"P0102","MAF sinal baixo","MAF sujo/desligado ou fio.",2},
+  {"P0103","MAF sinal alto","MAF ou chicote.",2},
+  {"P0105","Sensor de pressao do coletor (MAP)","Sensor MAP ou mangueira de vacuo.",2},
+  {"P0106","MAP fora da faixa","Mangueira de vacuo solta ou sensor MAP.",2},
+  {"P0107","MAP sinal baixo","Sensor MAP ou fio.",2},
+  {"P0108","MAP sinal alto","Sensor MAP ou mangueira.",2},
+  {"P0110","Sensor de temperatura do ar (IAT)","Sensor IAT ou chicote.",1},
+  {"P0111","IAT fora da faixa","Sensor IAT.",1},
+  {"P0112","IAT sinal baixo","Sensor IAT em curto.",1},
+  {"P0113","IAT sinal alto","Sensor IAT aberto ou fio.",1},
+  {"P2015","Sensor de posicao do coletor de admissao","Sensor/haste do coletor (comum em VW/Audi).",2},
+  {"P2279","Entrada de ar falsa na admissao","Mangueira/junta solta admitindo ar.",2},
+  // ---- Temperatura do motor (ATENCAO) ----
+  {"P0115","Sensor de temperatura do motor","Sensor de temperatura (agua) ou chicote.",2},
+  {"P0116","Temperatura do motor fora da faixa","Sensor de temperatura ou termostato.",2},
+  {"P0117","Temperatura do motor - sinal baixo","Sensor em curto.",2},
+  {"P0118","Temperatura do motor - sinal alto","Sensor aberto/desligado ou fio partido.",2},
+  {"P0125","Motor demora a esquentar","Termostato aberto/preso ou sensor de temperatura.",1},
+  {"P0128","Termostato abrindo cedo","Termostato preso aberto (motor nao esquenta direito).",1},
+  {"P0217","Motor superaquecendo","PARE: falta de agua, termostato, bomba d'agua ou ventoinha.",3},
+  {"P0218","Temperatura do cambio alta","PARE e deixe esfriar: nivel/qualidade do oleo do cambio.",3},
+  // ---- Borboleta / pedal (TPS / acelerador) ----
+  {"P0120","Sensor da borboleta (TPS)","Corpo de borboleta ou sensor TPS.",2},
+  {"P0121","TPS fora da faixa","Corpo de borboleta sujo ou sensor.",2},
+  {"P0122","TPS sinal baixo","Sensor TPS ou fio.",2},
+  {"P0123","TPS sinal alto","Sensor TPS ou fio.",2},
+  {"P0221","Sensor do pedal do acelerador","Sensor do pedal ou chicote.",2},
+  {"P0222","Pedal do acelerador sinal baixo","Sensor do pedal.",2},
+  {"P0223","Pedal do acelerador sinal alto","Sensor do pedal.",2},
+  {"P2101","Motor da borboleta eletronica","Corpo de borboleta eletronico (limpar ou trocar).",2},
+  {"P2111","Borboleta presa aberta","Corpo de borboleta travado.",3},
+  {"P2118","Corrente do motor da borboleta","Corpo de borboleta eletronico.",2},
+  {"P2135","Sensores da borboleta divergentes","Corpo de borboleta ou sensor TPS.",2},
+  // ---- Marcha lenta / velocidade ----
+  {"P0505","Controle de marcha lenta","Corpo de borboleta sujo ou atuador de marcha lenta.",1},
+  {"P0506","Marcha lenta baixa","Borboleta suja ou entrada de ar.",1},
+  {"P0507","Marcha lenta alta","Entrada de ar falsa ou borboleta.",1},
+  {"P0500","Sensor de velocidade","Sensor de velocidade (VSS) ou chicote.",1},
+  {"P0501","Velocidade fora da faixa","Sensor de velocidade.",1},
+  // ---- Ignicao / sincronismo (virabrequim/comando) ----
+  {"P0335","Sensor de rotacao (virabrequim)","Sensor de rotacao (comum: carro morre e nao pega). Chicote ou roda fonica.",3},
+  {"P0336","Roda fonica do virabrequim","Roda dentada danificada ou sensor.",2},
+  {"P0340","Sensor de fase (comando)","Sensor de fase ou chicote.",2},
+  {"P0341","Sensor de fase fora de sincronismo","Sensor de fase, corrente/correia solta.",2},
+  {"P0016","Sincronismo virabrequim x comando","Corrente/correia dentada esticada ou variador. Pode danificar o motor.",3},
+  {"P0011","Variador de comando (admissao) adiantado","Variador (VVT), solenoide ou oleo sujo/baixo.",2},
+  {"P0012","Variador de comando (admissao) atrasado","Variador (VVT), solenoide ou oleo.",2},
+  {"P0014","Variador de comando (escape) adiantado","Variador (VVT) do escape ou oleo.",2},
+  {"P0021","Variador de comando (lado 2)","Variador (VVT) ou oleo.",2},
+  // ---- Detonacao / EGR ----
+  {"P0325","Sensor de detonacao (knock)","Sensor de detonacao ou chicote.",1},
+  {"P0327","Sensor de detonacao sinal baixo","Sensor de detonacao.",1},
+  {"P0401","Fluxo do EGR baixo","Valvula EGR entupida de carvao.",1},
+  {"P0402","Fluxo do EGR alto","Valvula EGR presa aberta.",1},
+  {"P0403","Circuito da valvula EGR","Valvula EGR eletrica ou chicote.",1},
+  {"P0404","Valvula EGR fora da faixa","Valvula EGR.",1},
+  // ---- Pressao de oleo (ATENCAO) ----
+  {"P0520","Sensor de pressao de oleo","Sensor de pressao de oleo ou chicote.",2},
+  {"P0521","Pressao de oleo fora da faixa","Sensor ou pressao real baixa - verifique o nivel.",2},
+  {"P0522","Pressao de oleo baixa","PARE e cheque o oleo: pode ser bomba/desgaste do motor.",3},
+  // ---- Turbo / sobrealimentacao ----
+  {"P0299","Turbo com pressao baixa","Vazamento na tubulacao do turbo, valvula ou turbo.",2},
+  {"P0234","Turbo com pressao alta (sobrepressao)","Valvula wastegate presa ou atuador.",2},
+  {"P02CD","Turbo/atuador","Atuador do turbo ou chicote.",2},
+  // ---- Cambio automatico ----
+  {"P0700","Falha no cambio automatico","Veja tambem os codigos do modulo do cambio (TCM).",2},
+  {"P0715","Sensor de rotacao de entrada do cambio","Sensor do cambio ou chicote.",2},
+  {"P0720","Sensor de rotacao de saida do cambio","Sensor do cambio.",2},
+  {"P0730","Relacao de marcha errada","Oleo do cambio, solenoides ou embreagens internas.",2},
+  {"P0740","Conversor de torque (lock-up)","Solenoide do conversor ou oleo do cambio.",2},
+  {"P0741","Conversor de torque preso solto","Solenoide do conversor ou oleo.",2},
+  {"P0748","Solenoide de pressao do cambio","Solenoide ou oleo do cambio.",2},
+  {"P0755","Solenoide de marcha (B)","Solenoide do cambio.",2},
+  // ---- Eletrico / bateria / sistema ----
+  {"P0562","Tensao do sistema baixa","Bateria fraca, alternador ou correia. Pode te deixar na mao.",2},
+  {"P0563","Tensao do sistema alta","Regulador do alternador (sobrecarga).",2},
+  {"P0620","Circuito do alternador","Alternador ou chicote.",2},
+  {"P0645","Rele do compressor do ar-condicionado","Rele do A/C.",1},
+  {"P0650","Luz de injecao (MIL)","Circuito da luz do painel.",1},
+  {"P0685","Rele principal (ECM)","Rele de alimentacao do modulo do motor.",2},
+  // ---- Comunicacao entre modulos (rede CAN) ----
+  {"U0001","Falha na rede CAN","Chicote da rede, mau contato ou modulo travado.",2},
+  {"U0100","Sem comunicacao com o modulo do motor (ECM)","Modulo do motor, alimentacao ou rede CAN.",3},
+  {"U0101","Sem comunicacao com o cambio (TCM)","Modulo do cambio ou rede.",2},
+  {"U0121","Sem comunicacao com o ABS","Modulo do ABS ou rede.",2},
+  {"U0140","Sem comunicacao com a carroceria (BCM)","Modulo da carroceria ou rede.",2},
+  {"U0155","Sem comunicacao com o painel","Painel de instrumentos ou rede.",2},
+  {"U0073","Rede de comunicacao desligada","Curto na rede CAN ou modulo em curto.",2},
+  // ---- Marcas comuns na frota BR (P1xxx especificos) ----
+  {"P1612","GM: falha de comunicacao do modulo","Modulo do motor (GM) ou chicote.",2},
+  {"P1613","GM: falha de comunicacao","Rede/modulo GM.",2},
+  {"P1614","GM: falha de comunicacao","Rede/modulo GM.",2},
+  {"P1258","Motor superaquecido (protecao)","PARE: sistema de arrefecimento (Ford/outros).",3},
+  {"P1000","Monitores de emissao incompletos","Normal apos apagar codigos; rode alguns dias.",1},
+  {"P1101","MAF fora da faixa na partida","MAF sujo ou entrada de ar (Ford/GM).",2},
+  {"P1128","Malha de combustivel nao fecha","Sonda velha ou entrada de ar (VW/Audi).",2},
+  {"P1136","Mistura pobre (VW/Audi)","Entrada de ar falsa ou sonda.",2},
 };
-const uint16_t DTC_TABLE_SIZE = sizeof(DTC_TABLE) / sizeof(DtcDescricao);
+const uint16_t DTC_TABLE_SIZE = sizeof(DTC_TABLE) / sizeof(DtcInfo);
 
-const char* descricaoDTC(const char* codigo) {
+const DtcInfo* infoDTC(const char* codigo) {
   for (uint16_t i = 0; i < DTC_TABLE_SIZE; i++) {
-    if (strcmp(codigo, DTC_TABLE[i].codigo) == 0) return DTC_TABLE[i].descricao;
+    if (strcmp(codigo, DTC_TABLE[i].codigo) == 0) return &DTC_TABLE[i];
   }
   return NULL;
+}
+// compat: continua devolvendo so a descricao (usado em varios lugares)
+const char* descricaoDTC(const char* codigo) {
+  const DtcInfo* d = infoDTC(codigo);
+  return d ? d->descricao : NULL;
+}
+// texto curto da gravidade (pro usuario leigo)
+const char* gravidadeTexto(uint8_t g) {
+  switch (g) {
+    case 3: return "PARE - risco de quebrar";
+    case 2: return "Leve na oficina esta semana";
+    case 1: return "Pode rodar, resolva sem pressa";
+    default: return "";
+  }
 }
 
 // ============================================================
@@ -4328,12 +4479,30 @@ void atualizarDiag() {
         lv_label_set_text(diagMsg, buf);
         lv_obj_set_style_text_color(diagMsg, lv_color_hex(0xFF5252), 0);
         lv_obj_align(diagMsg, LV_ALIGN_TOP_MID, 0, 40);
-        char lista[MAX_DTCS * 40]; lista[0] = 0;
-        for (int i = 0; i < diag_num_dtcs && i < MAX_DTCS; i++) {
-          const char* desc = descricaoDTC(diag_dtcs[i]);
-          char linha[48];
-          if (desc) snprintf(linha, sizeof(linha), "%s  %s\n", diag_dtcs[i], desc);
-          else      snprintf(linha, sizeof(linha), "%s\n", diag_dtcs[i]);
+        // Buffer estatico (nao pesa a pilha da task de tela). Mostra descricao +
+        // causa + gravidade em portugues, o mais grave primeiro.
+        static char lista[MAX_DTCS * 240]; lista[0] = 0;
+        // ordem por gravidade (3->1): quem pode quebrar o motor aparece no topo
+        int ordem[MAX_DTCS]; int nord = 0;
+        for (int i = 0; i < diag_num_dtcs && i < MAX_DTCS; i++) ordem[nord++] = i;
+        for (int a = 0; a < nord - 1; a++)
+          for (int b = a + 1; b < nord; b++) {
+            const DtcInfo* da = infoDTC(diag_dtcs[ordem[a]]);
+            const DtcInfo* db = infoDTC(diag_dtcs[ordem[b]]);
+            uint8_t ga = da ? da->gravidade : 0, gb = db ? db->gravidade : 0;
+            if (gb > ga) { int t = ordem[a]; ordem[a] = ordem[b]; ordem[b] = t; }
+          }
+        for (int k = 0; k < nord; k++) {
+          int i = ordem[k];
+          const DtcInfo* d = infoDTC(diag_dtcs[i]);
+          char linha[240];
+          if (d) {
+            const char* marca = (d->gravidade == 3) ? LV_SYMBOL_WARNING " " : "";
+            snprintf(linha, sizeof(linha), "%s%s  %s\n   %s\n   [%s]\n\n",
+                     marca, diag_dtcs[i], d->descricao, d->causa, gravidadeTexto(d->gravidade));
+          } else {
+            snprintf(linha, sizeof(linha), "%s  (codigo nao catalogado)\n\n", diag_dtcs[i]);
+          }
           strncat(lista, linha, sizeof(lista) - strlen(lista) - 1);
         }
         lv_label_set_text(diagLista, lista);
@@ -4987,8 +5156,12 @@ String executarComandoApp(String cmd) {
     if (diag_num_dtcs == 0) r += "Nenhum codigo\n";
     for (int i = 0; i < diag_num_dtcs && i < MAX_DTCS; i++) {
       r += String(diag_dtcs[i]);
-      const char* desc = descricaoDTC(diag_dtcs[i]);
-      if (desc) { r += " "; r += desc; }
+      const DtcInfo* d = infoDTC(diag_dtcs[i]);
+      if (d) {
+        r += " | "; r += d->descricao;
+        r += " | Causa: "; r += d->causa;
+        r += " | "; r += gravidadeTexto(d->gravidade);
+      }
       r += "\n";
     }
     return r;
