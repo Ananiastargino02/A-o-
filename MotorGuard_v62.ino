@@ -188,6 +188,7 @@ struct DadosCarro {
 
 DadosCarro dados_publicos;
 SemaphoreHandle_t mutex_dados, mutex_hora, mutex_hodometro, mutex_manut, mutex_debug, mutex_i2c;
+SemaphoreHandle_t mutex_fs = NULL;   // v7: protege gravacoes na flash (LittleFS) de 2 nucleos
 
 // ============================================================
 //  DEBUG TRACE via Serial (para diagnosticar o reboot "so andando")
@@ -228,7 +229,7 @@ volatile uint32_t log_total = 0;
 volatile uint8_t pagina_atual = 0;
 volatile uint8_t pagina_anterior = 255;
 volatile bool entrou_pagina = false;  // true no 1o frame apos trocar de pagina (forca redesenho)
-const uint8_t TOTAL_PAGINAS = 6;  // 0 cockpit,1 diag,2 sistema,3 manut,4 ajuste,5 temas
+const uint8_t TOTAL_PAGINAS = 7;  // 0 cockpit,1 diag,2 sistema,3 manut,4 ajuste,5 temas,6 historico
 
 // ===== NOVO: Estados da página de ajuste de hora/data =====
 #define AJUSTE_ESTADO_MENU    0
@@ -947,6 +948,7 @@ void vbatSave() {
 }
 // grava 1 amostra de tensao de repouso (chamar no maximo 1x/dia)
 void vbatRegistrar(uint16_t mv) {
+  if (mutex_fs && xSemaphoreTake(mutex_fs, pdMS_TO_TICKS(300)) != pdTRUE) return;
   if (vbat_n >= VBAT_HIST_N) {   // desliza (descarta a mais antiga)
     for (int i = 1; i < VBAT_HIST_N; i++) vbat_hist[i - 1] = vbat_hist[i];
     vbat_n = VBAT_HIST_N - 1;
@@ -955,6 +957,7 @@ void vbatRegistrar(uint16_t mv) {
   vbat_hist[vbat_n].mv = mv;
   vbat_n++;
   vbatSave();
+  if (mutex_fs) xSemaphoreGive(mutex_fs);
 }
 // tendencia: quantos mV/dia a bateria de repouso esta caindo (0 se poucos dados).
 // negativo = enfraquecendo. Usa a 1a metade vs a 2a metade das amostras.
@@ -994,6 +997,7 @@ void evtSave() {
 }
 // registra um evento no historico (ring dos ultimos EVT_HIST_N)
 void evtRegistrar(uint8_t tipo, int16_t v, const char* cod) {
+  if (mutex_fs && xSemaphoreTake(mutex_fs, pdMS_TO_TICKS(300)) != pdTRUE) return;
   Evento& e = evt_hist[evt_head];
   e.ts = agoraTS(); e.tipo = tipo; e.v = v;
   memset(e.cod, 0, sizeof(e.cod));
@@ -1001,6 +1005,7 @@ void evtRegistrar(uint8_t tipo, int16_t v, const char* cod) {
   evt_head = (evt_head + 1) % EVT_HIST_N;
   if (evt_n < EVT_HIST_N) evt_n++;
   evtSave();
+  if (mutex_fs) xSemaphoreGive(mutex_fs);
 }
 // devolve o evento 'k' (0 = mais recente). false se nao existir.
 bool evtGet(int k, Evento& out) {
@@ -2848,7 +2853,8 @@ void taskCAN(void* param) {
           char dtcs_buf[MAX_DTCS][6];
           int n = klineLerDTCs(dtcs_buf);
           if (n < 0) { diag_num_dtcs = 0; }
-          else { for (int i = 0; i < n; i++) memcpy(diag_dtcs[i], dtcs_buf[i], 6); diag_num_dtcs = n; if (rtc_ok) diag_ultima_leitura = rtcNow().unixtime(); }
+          else { for (int i = 0; i < n; i++) memcpy(diag_dtcs[i], dtcs_buf[i], 6); diag_num_dtcs = n; if (rtc_ok) diag_ultima_leitura = rtcNow().unixtime();
+                 for (int i = 0; i < n && i < MAX_DTCS; i++) evtRegistrar(0, 0, diag_dtcs[i]); }   // v7: historico
           diag_estado = DIAG_ESTADO_RESULTADO;
         }
         if (diag_solicitar_apagar) {
@@ -2996,6 +3002,7 @@ void taskCAN(void* param) {
         for (int i = 0; i < n; i++) memcpy(diag_dtcs[i], dtcs_buf[i], 6);
         diag_num_dtcs = n;
         diag_ultima_leitura = rtcNow().unixtime();
+        for (int i = 0; i < n && i < MAX_DTCS; i++) evtRegistrar(0, 0, diag_dtcs[i]);   // v7: historico
       }
       diag_estado = DIAG_ESTADO_RESULTADO;
     }
@@ -3458,6 +3465,7 @@ static lv_obj_t *gAjuste, *ajTit, *ajCampo[6], *ajSalvar;
 static lv_obj_t *gSistema, *sisTit, *sisDist, *sisTempo;
 static lv_obj_t *sisConfirm, *sisConfirmSim, *sisConfirmNao;
 static lv_obj_t *gTemas, *temasOpt[6], *temasSel;
+static lv_obj_t *gHist, *histTit, *histLista;   // v7: tela de historico de eventos
 
 // resetCache: no-op no LVGL (a tela se redesenha sozinha); mantido p/ taskBotoes
 void resetCache() {}
@@ -5009,6 +5017,98 @@ void atualizarTemas() {
 }
 
 // ---------- Monta SO a pagina ativa (economiza RAM do LVGL) ----------
+// ============================================================
+//  v7: Tela HISTORICO (ultimos eventos com data/hora) - o "relatorio pro mecanico"
+// ============================================================
+const char* evtTipoTexto(uint8_t t) {
+  switch (t) {
+    case 0: return "Codigo (DTC)";
+    case 1: return "Temp. alta";
+    case 2: return "Bateria";
+    case 3: return "Alternador";
+    case 4: return "SUPERAQUEC.";
+    default: return "Info";
+  }
+}
+uint32_t evtTipoCor(uint8_t t) {
+  switch (t) {
+    case 4: return 0xFF1744;   // superaquecimento - vermelho forte
+    case 1: return 0xFF6E40;   // temp alta - laranja
+    case 2: return 0xFFC107;   // bateria - amarelo
+    case 3: return 0xFFC107;   // alternador - amarelo
+    case 0: return 0xFF8A80;   // DTC - rosa
+    default: return 0x90A4AE;
+  }
+}
+
+void montarHistorico() {
+  lv_obj_t* scr = lv_scr_act();
+  gHist = lv_obj_create(scr);
+  lv_obj_set_size(gHist, LV_W, LV_H);
+  lv_obj_center(gHist);
+  lv_obj_set_style_bg_color(gHist, lv_color_hex(0x05070D), 0);
+  lv_obj_set_style_border_width(gHist, 0, 0);
+  lv_obj_set_style_pad_all(gHist, 0, 0);
+  lv_obj_clear_flag(gHist, LV_OBJ_FLAG_SCROLLABLE);
+
+  histTit = lv_label_create(gHist);
+  lv_label_set_text(histTit, "HISTORICO");
+  lv_obj_set_style_text_font(histTit, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(histTit, lv_color_hex(0x4DD0E1), 0);
+  lv_obj_align(histTit, LV_ALIGN_TOP_MID, 0, 8);
+
+  // area rolavel com a lista de eventos
+  lv_obj_t* box = lv_obj_create(gHist);
+  lv_obj_set_size(box, LV_W - 16, LV_H - 52);
+  lv_obj_align(box, LV_ALIGN_BOTTOM_MID, 0, -6);
+  lv_obj_set_style_bg_color(box, lv_color_hex(0x0A0E16), 0);
+  lv_obj_set_style_border_width(box, 0, 0);
+  lv_obj_set_style_pad_all(box, 8, 0);
+  lv_obj_set_scroll_dir(box, LV_DIR_VER);
+  lv_obj_set_scrollbar_mode(box, LV_SCROLLBAR_MODE_AUTO);
+
+  histLista = lv_label_create(box);
+  lv_label_set_text(histLista, "");
+  lv_obj_set_style_text_font(histLista, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(histLista, lv_color_hex(0xCFD8DC), 0);
+  lv_label_set_long_mode(histLista, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(histLista, LV_W - 40);
+}
+
+void atualizarHistorico() {
+  static int last_n = -1;
+  if (evt_n == last_n) return;       // so redesenha quando muda
+  last_n = evt_n;
+  static char txt[EVT_HIST_N * 90];
+  txt[0] = 0;
+  if (evt_n == 0) {
+    lv_label_set_text(histLista, "Sem eventos ainda.\nCodigos, temperatura alta e\nbateria fraca aparecem aqui\ncom data e hora.");
+    return;
+  }
+  for (int k = 0; k < evt_n; k++) {
+    Evento e;
+    if (!evtGet(k, e)) break;
+    char linha[92];
+    // data/hora a partir do timestamp unix (RTC)
+    DateTime dt(e.ts);
+    char quando[24];
+    if (e.ts > 1000000000UL)   // timestamp real do RTC
+      snprintf(quando, sizeof(quando), "%02d/%02d %02d:%02d", dt.day(), dt.month(), dt.hour(), dt.minute());
+    else
+      snprintf(quando, sizeof(quando), "(sem hora)");
+    if (e.tipo == 0 && e.cod[0])
+      snprintf(linha, sizeof(linha), "%s  %s %s\n", quando, evtTipoTexto(e.tipo), e.cod);
+    else if (e.tipo == 1 || e.tipo == 4)
+      snprintf(linha, sizeof(linha), "%s  %s %dC\n", quando, evtTipoTexto(e.tipo), e.v);
+    else if (e.tipo == 2 || e.tipo == 3)
+      snprintf(linha, sizeof(linha), "%s  %s %.1fV\n", quando, evtTipoTexto(e.tipo), e.v / 100.0);
+    else
+      snprintf(linha, sizeof(linha), "%s  %s\n", quando, evtTipoTexto(e.tipo));
+    strncat(txt, linha, sizeof(txt) - strlen(txt) - 1);
+  }
+  lv_label_set_text(histLista, txt);
+}
+
 void construirPagina(uint8_t pag) {
   lv_obj_clean(lv_scr_act());
   lv_obj_set_style_bg_color(lv_scr_act(), lv_color_hex(0x05070D), 0);
@@ -5017,7 +5117,8 @@ void construirPagina(uint8_t pag) {
   else if (pag == 2) montarSistema();
   else if (pag == 3) montarManut();
   else if (pag == 4) montarAjuste();
-  else               montarTemas();   // pag == 5
+  else if (pag == 5) montarTemas();
+  else               montarHistorico();   // pag == 6
   pagina_montada_nova = true;
 }
 
@@ -5076,6 +5177,7 @@ void taskTela(void* param) {
     else if (pagina_atual == 3) atualizarManut();
     else if (pagina_atual == 4) atualizarAjuste();
     else if (pagina_atual == 5) atualizarTemas();
+    else if (pagina_atual == 6) atualizarHistorico();
 
     STAGE_TELA("lv_timer_handler");
     lv_timer_handler();
@@ -5455,6 +5557,7 @@ void setup() {
   mutex_manut = xSemaphoreCreateMutex();
   mutex_debug = xSemaphoreCreateMutex();
   mutex_i2c = xSemaphoreCreateMutex();
+  mutex_fs = xSemaphoreCreateMutex();
 
   Wire.begin(21, 22);
   Wire.setClock(100000);
@@ -5615,8 +5718,8 @@ static void botaoOK() {
       }
       ajuste_estado = AJUSTE_ESTADO_DIA;
       nav_modo = NAV_MODO_EDICAO;
-    } else if (pagina_atual == 2) {
-      pagina_atual = (pagina_atual + 1) % TOTAL_PAGINAS;
+    } else if (pagina_atual == 2 || pagina_atual == 6) {
+      pagina_atual = (pagina_atual + 1) % TOTAL_PAGINAS;   // Sistema/Historico: OK so avança
     } else if (pagina_atual == 5) {
       nav_modo = NAV_MODO_EDICAO;   // Temas: entra p/ escolher o estilo
     }
