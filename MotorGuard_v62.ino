@@ -3465,8 +3465,10 @@ static lv_obj_t *gDiag, *diagTit, *diagSel, *diagM[3], *diagMsg, *diagLista, *di
 static lv_obj_t *gAjuste, *ajTit, *ajCampo[6], *ajSalvar;
 static lv_obj_t *gSistema, *sisTit, *sisDist, *sisTempo;
 static lv_obj_t *sisConfirm, *sisConfirmSim, *sisConfirmNao;
-static lv_obj_t *gTemas, *temasOpt[6], *temasSel;
+static lv_obj_t *gTemas, *temasOpt[7], *temasSel;
 static lv_obj_t *gHist, *histTit, *histLista;   // v7: tela de historico de eventos
+// v7 tema 6 "Saude": barra de status + 3 numeros grandes (temp/bateria/combustivel)
+static lv_obj_t *sdBand, *sdBandTxt, *sdBandIco, *sdTemp, *sdBat, *sdComb, *sdFuel, *sdBottom;
 
 // resetCache: no-op no LVGL (a tela se redesenha sozinha); mantido p/ taskBotoes
 void resetCache() {}
@@ -4131,6 +4133,76 @@ void montarCockpit5() {
 }
 
 // ---------- Dispatcher: monta o painel do estilo escolhido ----------
+// ============================================================
+//  Tema 6 "SAUDE" (v7): tela principal simples, sem jargao.
+//  Barra de status verde/amarelo/vermelho + 3 numeros grandes
+//  (temperatura, bateria, combustivel). A barra reaproveita a lista
+//  de alertas que o atualizarCockpit ja calcula.
+// ============================================================
+void montarCockpit6() {
+  baseCockpit(0x05070D);
+
+  // ----- barra de STATUS (topo) -----
+  sdBand = lv_obj_create(gCockpit);
+  lv_obj_set_size(sdBand, 300, 44);
+  lv_obj_set_pos(sdBand, 10, 10);
+  lv_obj_set_style_radius(sdBand, 9, 0);
+  lv_obj_set_style_border_width(sdBand, 2, 0);
+  lv_obj_set_style_bg_color(sdBand, lv_color_hex(0x0E3320), 0);
+  lv_obj_set_style_border_color(sdBand, lv_color_hex(0x69F0AE), 0);
+  lv_obj_set_style_pad_all(sdBand, 0, 0);
+  lv_obj_clear_flag(sdBand, LV_OBJ_FLAG_SCROLLABLE);
+  sdBandIco = lv_label_create(sdBand);
+  lv_label_set_text(sdBandIco, LV_SYMBOL_OK);
+  lv_obj_set_style_text_font(sdBandIco, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(sdBandIco, lv_color_hex(0x69F0AE), 0);
+  lv_obj_align(sdBandIco, LV_ALIGN_LEFT_MID, 12, 0);
+  sdBandTxt = lv_label_create(sdBand);
+  lv_label_set_text(sdBandTxt, "TUDO CERTO");
+  lv_obj_set_style_text_font(sdBandTxt, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(sdBandTxt, lv_color_hex(0x69F0AE), 0);
+  lv_obj_align(sdBandTxt, LV_ALIGN_CENTER, 12, 0);
+
+  // ----- titulos das 3 colunas -----
+  rotulo(gCockpit, "TEMPERATURA", &lv_font_montserrat_14, 0x78909C, LV_ALIGN_TOP_MID, -100, 74);
+  rotulo(gCockpit, "BATERIA",     &lv_font_montserrat_14, 0x78909C, LV_ALIGN_TOP_MID,    0, 74);
+  rotulo(gCockpit, "COMBUST.",    &lv_font_montserrat_14, 0x78909C, LV_ALIGN_TOP_MID,  100, 74);
+
+  // ----- 3 numeros GRANDES -----
+  sdTemp = lv_label_create(gCockpit);
+  lv_label_set_text(sdTemp, "--");
+  lv_obj_set_style_text_font(sdTemp, &lv_font_montserrat_40, 0);
+  lv_obj_set_style_text_color(sdTemp, lv_color_white(), 0);
+  lv_obj_align(sdTemp, LV_ALIGN_TOP_MID, -100, 96);
+  sdBat = lv_label_create(gCockpit);
+  lv_label_set_text(sdBat, "--");
+  lv_obj_set_style_text_font(sdBat, &lv_font_montserrat_40, 0);
+  lv_obj_set_style_text_color(sdBat, lv_color_white(), 0);
+  lv_obj_align(sdBat, LV_ALIGN_TOP_MID, 0, 96);
+  sdComb = lv_label_create(gCockpit);
+  lv_label_set_text(sdComb, "--");
+  lv_obj_set_style_text_font(sdComb, &lv_font_montserrat_40, 0);
+  lv_obj_set_style_text_color(sdComb, lv_color_white(), 0);
+  lv_obj_align(sdComb, LV_ALIGN_TOP_MID, 100, 96);
+
+  // ----- barra de combustivel -----
+  sdFuel = lv_bar_create(gCockpit);
+  lv_obj_set_size(sdFuel, 260, 10);
+  lv_obj_align(sdFuel, LV_ALIGN_TOP_MID, 0, 158);
+  lv_bar_set_range(sdFuel, 0, 100);
+  lv_obj_set_style_bg_color(sdFuel, lv_color_hex(0x16202F), LV_PART_MAIN);
+  lv_obj_set_style_radius(sdFuel, 5, LV_PART_MAIN);
+  lv_obj_set_style_bg_color(sdFuel, lv_color_hex(0x4DD0E1), LV_PART_INDICATOR);
+  lv_obj_set_style_radius(sdFuel, 5, LV_PART_INDICATOR);
+
+  // ----- rodape (km ou detalhe do status) -----
+  sdBottom = lv_label_create(gCockpit);
+  lv_label_set_text(sdBottom, "");
+  lv_obj_set_style_text_font(sdBottom, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(sdBottom, lv_color_hex(0x546E7A), 0);
+  lv_obj_align(sdBottom, LV_ALIGN_BOTTOM_MID, 0, -8);
+}
+
 void montarCockpit() {
   // zera todos os handles (cada estilo cria so os que usa; atualizarCockpit checa NULL)
   meter = NULL; indArco = NULL; barRpm = NULL; barVel = NULL; meterMax = 10;
@@ -4139,12 +4211,14 @@ void montarCockpit() {
   popup = NULL; popupMsg = NULL; popupIcon = NULL;
   batBody = NULL; batFill = NULL; batTxt = NULL; batNub = NULL;
   rpmMarker = NULL;
+  sdBand = sdBandTxt = sdBandIco = sdTemp = sdBat = sdComb = sdFuel = sdBottom = NULL;
   switch (cockpit_estilo) {
     case 1: montarCockpit1(); break;
     case 2: montarCockpit2(); break;
     case 3: montarCockpit3(); break;
     case 4: montarCockpit4(); break;
     case 5: montarCockpit5(); break;
+    case 6: montarCockpit6(); break;
     default: montarCockpit0();
   }
 }
@@ -4183,9 +4257,11 @@ void atualizarCockpit(DadosCarro &d) {
   static int alertIdx = 0, alertCnt = 0;
   static char alerts[6][20];
   static int last_arc = -1, last_band = -1, last_alertIdx = -1;
+  static int last_sdst = -99, last_sdai = -99;   // v7 tema Saude: estado/aviso da barra
 
   if (pagina_montada_nova) {
     last_arc = -1; last_band = -1; last_alertIdx = -1; alertCnt = 0; popup_shown = false;
+    last_sdst = -99; last_sdai = -99;
     pagina_montada_nova = false;
   }
 
@@ -4321,6 +4397,68 @@ void atualizarCockpit(DadosCarro &d) {
   bool tempCritica = false;
   for (int i = 0; i < alertCnt; i++) if (strcmp(alerts[i], "TEMP ALTA") == 0) { tempCritica = true; break; }
 
+  // ===== v7 tema SAUDE: atualiza os 3 numeros + a barra de status =====
+  if (cockpit_estilo == 6) {
+    char sb[16];
+    if (sdTemp) {
+      if (d.temp_motor > -40) {
+        snprintf(sb, sizeof(sb), "%dC", d.temp_motor);
+        lv_label_set_text(sdTemp, sb);
+        uint32_t c = d.temp_motor > 110 ? 0xFF1744 : (d.temp_motor > 102 ? 0xFFC107 : 0xFFFFFF);
+        lv_obj_set_style_text_color(sdTemp, lv_color_hex(c), 0);
+      } else lv_label_set_text(sdTemp, "--");
+    }
+    if (sdBat) {
+      if (d.tensao > 0.5f) {
+        snprintf(sb, sizeof(sb), "%.1fV", d.tensao);
+        lv_label_set_text(sdBat, sb);
+        bool ruim = (ligado && (d.tensao < 12.2f || d.tensao > 14.7f)) ||
+                    (!ligado && d.tensao <= 12.0f) || alerta_bateria_prev;
+        lv_obj_set_style_text_color(sdBat, lv_color_hex(ruim ? 0xFFC107 : 0xFFFFFF), 0);
+      } else lv_label_set_text(sdBat, "--");
+    }
+    if (sdComb) {
+      if (d.combust >= 0) {
+        snprintf(sb, sizeof(sb), "%d%%", d.combust);
+        lv_label_set_text(sdComb, sb);
+        lv_obj_set_style_text_color(sdComb, lv_color_hex(d.combust < 10 ? 0xFFC107 : 0xFFFFFF), 0);
+        if (sdFuel) lv_bar_set_value(sdFuel, d.combust, LV_ANIM_OFF);
+      } else lv_label_set_text(sdComb, "--");
+    }
+    // barra de status: vermelho (pare) / amarelo (atencao) / verde (ok)
+    int st = tempCritica ? 2 : (alertCnt > 0 ? 1 : 0);
+    uint32_t bg, brd; const char* ico; const char* msg;
+    if (st == 2)      { bg = 0x3A0B0B; brd = 0xFF1744; ico = LV_SYMBOL_WARNING; msg = "PARE - MOTOR QUENTE"; }
+    else if (st == 1) { bg = 0x332600; brd = 0xFFC107; ico = LV_SYMBOL_WARNING; msg = alerts[alertIdx]; }
+    else              { bg = 0x0E3320; brd = 0x69F0AE; ico = LV_SYMBOL_OK;      msg = "TUDO CERTO"; }
+    if (sdBand && st != last_sdst) {
+      lv_obj_set_style_bg_color(sdBand, lv_color_hex(bg), 0);
+      lv_obj_set_style_border_color(sdBand, lv_color_hex(brd), 0);
+      lv_label_set_text(sdBandIco, ico);
+      lv_obj_set_style_text_color(sdBandIco, lv_color_hex(brd), 0);
+      lv_obj_set_style_text_color(sdBandTxt, lv_color_hex(brd), 0);
+      lv_label_set_text(sdBandTxt, msg);
+      lv_obj_align(sdBandTxt, LV_ALIGN_CENTER, 12, 0);
+      last_sdst = st; last_sdai = alertIdx;
+    } else if (sdBandTxt && st == 1 && alertIdx != last_sdai) {
+      lv_label_set_text(sdBandTxt, msg);      // amarelo: cicla entre os avisos
+      lv_obj_align(sdBandTxt, LV_ALIGN_CENTER, 12, 0);
+      last_sdai = alertIdx;
+    }
+    if (sdBottom) {
+      if (st == 0) {
+        uint32_t kmv = (km_total_x100 + km_acumulado_x100) / 100;
+        snprintf(sb, sizeof(sb), "%lu km", (unsigned long)kmv);
+        lv_label_set_text(sdBottom, sb);
+      } else if (alerta_bateria_prev && bateria_semanas_est > 0) {
+        snprintf(sb, sizeof(sb), "bateria: ~%d sem.", bateria_semanas_est);
+        lv_label_set_text(sdBottom, sb);
+      } else {
+        lv_label_set_text(sdBottom, "");
+      }
+    }
+  }
+
   static uint32_t alerta_desde = 0;
   if (alertCnt > 0) { if (alerta_desde == 0) alerta_desde = millis(); }
   else alerta_desde = 0;
@@ -4333,7 +4471,9 @@ void atualizarCockpit(DadosCarro &d) {
   // janela de exibicao: temp critica SEMPRE; avisos normais 5s on / 15s off (ciclo 20s)
   bool janela = tempCritica || (alerta_desde && ((millis() - alerta_desde) % 20000UL) < 5000UL);
 
-  if (alertCnt == 0 || !janela) {
+  if (!popup) {
+    // tema sem popup (ex.: Saude) — a barra de status ja mostra o estado. Nao mexe.
+  } else if (alertCnt == 0 || !janela) {
     if (popup_shown) { lv_obj_add_flag(popup, LV_OBJ_FLAG_HIDDEN); popup_shown = false; }
   } else {
     if (!popup_shown) { lv_obj_clear_flag(popup, LV_OBJ_FLAG_HIDDEN); popup_shown = true; blink_changed = true; last_alertIdx = -1; }
@@ -4960,7 +5100,7 @@ void montarPlaceholder(const char* txt) {
 // ============================================================
 //  Pagina TEMAS: usuario escolhe o estilo do painel (0-3)
 // ============================================================
-static const char* TEMAS_NOME[6] = {"Classico", "Ferrari", "Lamborghini", "Tesla", "Painel Duplo", "Performance"};
+static const char* TEMAS_NOME[7] = {"Classico", "Ferrari", "Lamborghini", "Tesla", "Painel Duplo", "Performance", "Saude"};
 
 void montarTemas() {
   lv_obj_t* scr = lv_scr_act();
@@ -4976,23 +5116,23 @@ void montarTemas() {
 
   // caixa de selecao (fica atras da opcao escolhida). 6 temas -> linhas de 33px.
   temasSel = lv_obj_create(gTemas);
-  lv_obj_set_size(temasSel, 300, 31);
+  lv_obj_set_size(temasSel, 300, 28);
   lv_obj_set_style_bg_color(temasSel, lv_color_hex(0x16263A), 0);
   lv_obj_set_style_border_color(temasSel, lv_color_hex(0x00E5FF), 0);
   lv_obj_set_style_border_width(temasSel, 2, 0);
   lv_obj_set_style_radius(temasSel, 6, 0);
   lv_obj_clear_flag(temasSel, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_pos(temasSel, 10, 22);
+  lv_obj_set_pos(temasSel, 10, 19);
 
   tema_sel = cockpit_estilo;
-  for (int i = 0; i < 6; i++) {
+  for (int i = 0; i < 7; i++) {   // 7 temas -> linhas de 28px p/ caber (com o rodape)
     lv_obj_t* nome = lv_label_create(gTemas);
     char buf[40];
     snprintf(buf, sizeof(buf), "%s%s", TEMAS_NOME[i], (i == cockpit_estilo) ? "  " LV_SYMBOL_OK : "");
     lv_label_set_text(nome, buf);
     lv_obj_set_style_text_font(nome, &lv_font_montserrat_28, 0);
     lv_obj_set_style_text_color(nome, lv_color_white(), 0);
-    lv_obj_set_pos(nome, 22, 25 + i * 33);
+    lv_obj_set_pos(nome, 22, 22 + i * 28);
     temasOpt[i] = nome;
   }
   rotulo(gTemas, LV_SYMBOL_UP LV_SYMBOL_DOWN " escolhe   " LV_SYMBOL_OK " aplica",
@@ -5002,13 +5142,13 @@ void montarTemas() {
 void atualizarTemas() {
   static int last_sel = -1, last_ativo = -1;
   if (pagina_montada_nova) { last_sel = -1; last_ativo = -1; pagina_montada_nova = false; }
-  if (tema_sel > 5) tema_sel = 0;
+  if (tema_sel > 6) tema_sel = 0;
   if (tema_sel != last_sel) {
-    lv_obj_set_pos(temasSel, 10, 22 + tema_sel * 33);
+    lv_obj_set_pos(temasSel, 10, 19 + tema_sel * 28);
     last_sel = tema_sel;
   }
   if (cockpit_estilo != last_ativo) {   // atualiza o check do que esta ativo
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 7; i++) {
       char buf[40];
       snprintf(buf, sizeof(buf), "%s%s", TEMAS_NOME[i], (i == cockpit_estilo) ? "  " LV_SYMBOL_OK : "");
       lv_label_set_text(temasOpt[i], buf);
@@ -5304,7 +5444,7 @@ void cockpitEstiloCarregar() {
   speedPrefs.begin("veican", true);
   cockpit_estilo = speedPrefs.getUChar("dash", 5);   // fresco = Performance (o painel do produto)
   speedPrefs.end();
-  if (cockpit_estilo > 5) cockpit_estilo = 5;
+  if (cockpit_estilo > 6) cockpit_estilo = 5;   // fora da faixa -> volta pro padrao Performance
 }
 void cockpitEstiloSalvar() {
   speedPrefs.begin("veican", false);
@@ -5940,7 +6080,7 @@ void taskBotoes(void* param) {
               diag_confirma_selecionado = (diag_confirma_selecionado == 0) ? 1 : 0;
             }
           } else if (pagina_atual == 5) {
-            if (tema_sel == 0) tema_sel = 5; else tema_sel--;
+            if (tema_sel == 0) tema_sel = 6; else tema_sel--;
           }
         } else {
           if (pagina_atual == 0) pagina_atual = TOTAL_PAGINAS - 1;
@@ -5977,7 +6117,7 @@ void taskBotoes(void* param) {
               diag_confirma_selecionado = (diag_confirma_selecionado == 0) ? 1 : 0;
             }
           } else if (pagina_atual == 5) {
-            tema_sel = (tema_sel + 1) % 6;
+            tema_sel = (tema_sel + 1) % 7;
           }
         } else {
           pagina_atual = (pagina_atual + 1) % TOTAL_PAGINAS;
