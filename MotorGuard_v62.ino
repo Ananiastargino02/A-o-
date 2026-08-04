@@ -52,6 +52,7 @@
 // O Bluedroid nao cabia (so ~90 KB livres -> crash LoadProhibited no boot).
 #include <NimBLEDevice.h>
 #include <Preferences.h>   // NVS interna do ESP32 (historico de velocidade)
+#include <LittleFS.h>      // flash interna (v7): historico de eventos + tendencia de bateria
 
 // Declaracoes antecipadas de structs usadas em assinaturas de funcao. O Arduino
 // gera os prototipos logo apos os #include (antes da definicao real), entao sem
@@ -893,6 +894,123 @@ const char* gravidadeTexto(uint8_t g) {
     case 1: return "Pode rodar, resolva sem pressa";
     default: return "";
   }
+}
+
+// ============================================================
+//  Armazenamento na FLASH interna (LittleFS) - v7
+//  A EEPROM externa (24C32, 4KB) esta cheia; historico de eventos e
+//  amostras de bateria vao pra flash de 8MB (particao 'spiffs').
+//  Estrategia: arrays em RAM carregados no boot, regravados ao mudar
+//  (poucos bytes, gravacao rara -> nao desgasta a flash).
+// ============================================================
+bool fs_ok = false;
+
+// ---- Tendencia de bateria (tensao de REPOUSO, 1 amostra/dia) ----
+#define VBAT_HIST_N 30
+struct VbatSample { uint32_t ts; uint16_t mv; };   // mv = milivolts
+VbatSample vbat_hist[VBAT_HIST_N];
+uint8_t    vbat_n = 0;      // quantas amostras validas
+static const char* VBAT_FILE = "/vbat.bin";
+
+// ---- Historico de eventos (DTC / alertas / picos) ----
+#define EVT_HIST_N 20
+// tipo: 0=DTC  1=TEMP ALTA  2=BATERIA FRACA  3=ALTERNADOR  4=SUPERAQUEC.  5=INFO
+struct Evento { uint32_t ts; uint8_t tipo; int16_t v; char cod[6]; };
+Evento   evt_hist[EVT_HIST_N];
+uint8_t  evt_n = 0;         // quantos validos (ate EVT_HIST_N, ring)
+uint16_t evt_head = 0;      // proximo indice de escrita (ring)
+static const char* EVT_FILE = "/evt.bin";
+
+static uint32_t agoraTS() { return rtc_ok ? rtcNow().unixtime() : (millis() / 1000); }
+
+void vbatLoad() {
+  vbat_n = 0;
+  if (!fs_ok || !LittleFS.exists(VBAT_FILE)) return;
+  File f = LittleFS.open(VBAT_FILE, "r");
+  if (!f) return;
+  uint8_t n = 0; f.read(&n, 1);
+  if (n > VBAT_HIST_N) n = VBAT_HIST_N;
+  int lidos = f.read((uint8_t*)vbat_hist, (size_t)n * sizeof(VbatSample));
+  if (lidos == (int)(n * sizeof(VbatSample))) vbat_n = n;
+  f.close();
+}
+void vbatSave() {
+  if (!fs_ok) return;
+  File f = LittleFS.open(VBAT_FILE, "w");
+  if (!f) return;
+  f.write(&vbat_n, 1);
+  f.write((uint8_t*)vbat_hist, (size_t)vbat_n * sizeof(VbatSample));
+  f.close();
+}
+// grava 1 amostra de tensao de repouso (chamar no maximo 1x/dia)
+void vbatRegistrar(uint16_t mv) {
+  if (vbat_n >= VBAT_HIST_N) {   // desliza (descarta a mais antiga)
+    for (int i = 1; i < VBAT_HIST_N; i++) vbat_hist[i - 1] = vbat_hist[i];
+    vbat_n = VBAT_HIST_N - 1;
+  }
+  vbat_hist[vbat_n].ts = agoraTS();
+  vbat_hist[vbat_n].mv = mv;
+  vbat_n++;
+  vbatSave();
+}
+// tendencia: quantos mV/dia a bateria de repouso esta caindo (0 se poucos dados).
+// negativo = enfraquecendo. Usa a 1a metade vs a 2a metade das amostras.
+int vbatTendenciaMvPorDia() {
+  if (vbat_n < 6) return 0;
+  int meio = vbat_n / 2;
+  long soma1 = 0, soma2 = 0;
+  for (int i = 0; i < meio; i++) soma1 += vbat_hist[i].mv;
+  for (int i = meio; i < vbat_n; i++) soma2 += vbat_hist[i].mv;
+  int med1 = soma1 / meio;
+  int med2 = soma2 / (vbat_n - meio);
+  uint32_t dt = vbat_hist[vbat_n - 1].ts - vbat_hist[0].ts;
+  int dias = dt / 86400; if (dias < 1) dias = 1;
+  return (med2 - med1) / dias;   // mV por dia (negativo = caindo)
+}
+
+void evtLoad() {
+  evt_n = 0; evt_head = 0;
+  if (!fs_ok || !LittleFS.exists(EVT_FILE)) return;
+  File f = LittleFS.open(EVT_FILE, "r");
+  if (!f) return;
+  f.read(&evt_n, 1);
+  f.read((uint8_t*)&evt_head, 2);
+  if (evt_n > EVT_HIST_N) evt_n = EVT_HIST_N;
+  if (evt_head >= EVT_HIST_N) evt_head = 0;
+  f.read((uint8_t*)evt_hist, sizeof(evt_hist));
+  f.close();
+}
+void evtSave() {
+  if (!fs_ok) return;
+  File f = LittleFS.open(EVT_FILE, "w");
+  if (!f) return;
+  f.write(&evt_n, 1);
+  f.write((uint8_t*)&evt_head, 2);
+  f.write((uint8_t*)evt_hist, sizeof(evt_hist));
+  f.close();
+}
+// registra um evento no historico (ring dos ultimos EVT_HIST_N)
+void evtRegistrar(uint8_t tipo, int16_t v, const char* cod) {
+  Evento& e = evt_hist[evt_head];
+  e.ts = agoraTS(); e.tipo = tipo; e.v = v;
+  memset(e.cod, 0, sizeof(e.cod));
+  if (cod) strncpy(e.cod, cod, sizeof(e.cod) - 1);
+  evt_head = (evt_head + 1) % EVT_HIST_N;
+  if (evt_n < EVT_HIST_N) evt_n++;
+  evtSave();
+}
+// devolve o evento 'k' (0 = mais recente). false se nao existir.
+bool evtGet(int k, Evento& out) {
+  if (k < 0 || k >= evt_n) return false;
+  int idx = (evt_head - 1 - k + EVT_HIST_N * 2) % EVT_HIST_N;
+  out = evt_hist[idx];
+  return true;
+}
+
+void flashStorageInit() {
+  fs_ok = LittleFS.begin(true);   // true = formata se nao conseguir montar (1a vez)
+  Serial.printf("[FS] LittleFS %s\n", fs_ok ? "montado" : "FALHOU");
+  if (fs_ok) { vbatLoad(); evtLoad(); Serial.printf("[FS] vbat=%d amostras, evt=%d eventos\n", vbat_n, evt_n); }
 }
 
 // ============================================================
@@ -5264,6 +5382,7 @@ void setup() {
   Serial.begin(115200);
   delay(500);
   Serial.println("\n==== " FIRMWARE_NOME " firmware v" FIRMWARE_VERSION " ====");
+  flashStorageInit();   // v7: monta a flash interna (historico + tendencia de bateria)
   analogSetPinAttenuation(PIN_VBAT, ADC_11db);
   esp_reset_reason_t reset_reason = esp_reset_reason();
   esp_sleep_wakeup_cause_t wake_cause = esp_sleep_get_wakeup_cause();
