@@ -1412,8 +1412,11 @@ bool itemVencido(uint8_t idx, uint32_t km_atual, uint32_t ts_atual) {
   // CORRECAO A: protege underflow. Apos ZERAR TUDO, km_atual=0 < km_ultima (valor antigo)
   // e a subtracao sem sinal viraria um numero gigante -> item aparecia "VENC." falso.
   uint32_t km_rodado = (km_atual >= item.km_ultima) ? (km_atual - item.km_ultima) : 0;
-  if (km_rodado >= item.km_intervalo) return true;
-  if (item.dias_intervalo > 0 && ts_atual >= item.timestamp_ultima) {
+  if (item.km_intervalo > 0 && km_rodado >= item.km_intervalo) return true;
+  // H8 (#42): so conta manutencao por TEMPO com o relogio confiavel (ajustado e
+  // com data plausivel > 2023). Relogio nao ajustado -> nao dispara vencimento falso.
+  if (item.dias_intervalo > 0 && !hora_nao_ajustada &&
+      ts_atual > 1672531200UL && ts_atual >= item.timestamp_ultima) {
     uint32_t segs = ts_atual - item.timestamp_ultima;
     if (segs / 86400 >= item.dias_intervalo) return true;
   }
@@ -3223,7 +3226,10 @@ void taskCAN(void* param) {
         }
         if (++seg_save >= 60) { seg_save = 0; salvarHodometro(); }  // persiste a cada 60s
       }
-      if (ultimo.velocidade > 0) {
+      // H8 (#43): filtro anti-salto. So integra distancia com velocidade PLAUSIVEL
+      // (1..250 km/h) e amostra RECENTE (delta<=3s). Um frame corrompido (ex.: 255)
+      // ou um travamento longo nao pode inflar o hodometro.
+      if (ultimo.velocidade > 0 && ultimo.velocidade <= 250 && delta_ms <= 3000) {
         float seg = delta_ms / 1000.0;
         float km100_inc = (ultimo.velocidade * seg * 100.0) / 3600.0 * km_cal;
         static float km100_residual = 0;
