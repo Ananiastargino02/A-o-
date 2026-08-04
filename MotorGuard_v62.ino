@@ -58,6 +58,9 @@
 // gera os prototipos logo apos os #include (antes da definicao real), entao sem
 // isto da "'OdoSlot' has not been declared" ao compilar.
 struct OdoSlot;
+struct DtcInfo;   // banco de DTC (infoDTC devolve const DtcInfo*)
+struct FsHdr;     // header dos arquivos LittleFS (fsSaveAtomic/fsLoadValid)
+struct Evento;    // historico de eventos (evtGet recebe Evento&)
 
 // (fontes agora sao do LVGL: montserrat 14/28/40)
 
