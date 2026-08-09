@@ -1,0 +1,98 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function logado() {
+      return request.auth != null;
+    }
+
+    function souEu(uid) {
+      return logado() && request.auth.uid == uid;
+    }
+
+    function minhaLoja(lojaId) {
+      return logado() &&
+        get(/databases/$(database)/documents/lojas/$(lojaId)).data.userId == request.auth.uid;
+    }
+
+    function pedidoEhMeu(pedidoId) {
+      return logado() &&
+        get(/databases/$(database)/documents/pedidos/$(pedidoId)).data.clienteId == request.auth.uid;
+    }
+
+    // ---------------- users ----------------
+    // Cada usuario so le/edita o proprio documento (contem telefone, fcmToken).
+    match /users/{userId} {
+      allow read, write: if souEu(userId);
+    }
+
+    // ---------------- lojas ----------------
+    // Perfil publico da loja (nome, avaliacao, categorias) - qualquer
+    // usuario logado pode ler para navegar/orcar. So o dono edita.
+    match /lojas/{lojaId} {
+      allow read: if logado();
+      allow create: if logado() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if minhaLoja(lojaId);
+    }
+
+    // ---------------- pedidos ----------------
+    match /pedidos/{pedidoId} {
+      // Cliente sempre le os proprios pedidos. Lojista le pedidos abertos
+      // (o filtro fino por categoria e raio de atendimento e feito no
+      // client - ver lib/providers/lojista_provider.dart).
+      allow read: if logado() && (
+        resource.data.clienteId == request.auth.uid ||
+        resource.data.status == 'aberto'
+      );
+      allow create: if logado() && request.resource.data.clienteId == request.auth.uid;
+      // Cliente pode reabrir/fechar o proprio pedido. Lojista so pode
+      // adicionar o proprio id em recusadoPor (via recusarPedido).
+      allow update: if logado() && (
+        resource.data.clienteId == request.auth.uid ||
+        (
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['recusadoPor']) &&
+          request.resource.data.recusadoPor.size() == resource.data.recusadoPor.size() + 1
+        )
+      );
+      allow delete: if false;
+    }
+
+    // ---------------- orcamentos ----------------
+    match /orcamentos/{orcamentoId} {
+      allow read: if logado() && (
+        pedidoEhMeu(resource.data.pedidoId) || minhaLoja(resource.data.lojaId)
+      );
+      allow create: if logado() && minhaLoja(request.resource.data.lojaId);
+      allow update, delete: if false;
+    }
+
+    // ---------------- chats ----------------
+    match /chats/{chatId} {
+      allow read, update: if logado() && (
+        resource.data.clienteId == request.auth.uid || minhaLoja(resource.data.lojaId)
+      );
+      // So o cliente inicia o chat, depois de ver o orcamento.
+      allow create: if logado() && request.resource.data.clienteId == request.auth.uid;
+      allow delete: if false;
+
+      match /mensagens/{mensagemId} {
+        function chatPai() {
+          return get(/databases/$(database)/documents/chats/$(chatId)).data;
+        }
+        allow read, create: if logado() && (
+          chatPai().clienteId == request.auth.uid || minhaLoja(chatPai().lojaId)
+        );
+        allow update, delete: if false;
+      }
+    }
+
+    // ---------------- avaliacoes ----------------
+    match /avaliacoes/{avaliacaoId} {
+      // Publicas para exibir a media da loja.
+      allow read: if logado();
+      allow create: if logado() && request.resource.data.clienteId == request.auth.uid;
+      allow update, delete: if false;
+    }
+  }
+}

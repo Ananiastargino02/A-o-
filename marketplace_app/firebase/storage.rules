@@ -1,0 +1,29 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function logado() {
+      return request.auth != null;
+    }
+
+    function ehImagemValida() {
+      return request.resource.size < 8 * 1024 * 1024 &&
+        request.resource.contentType.matches('image/.*');
+    }
+
+    // pedidos/{pedidoId}/..., orcamentos/{orcamentoId}/..., lojas/{lojaId}/...,
+    // chats/{chatId}/... - qualquer usuario logado pode ler (fotos sao
+    // mostradas entre as partes envolvidas) e enviar imagens dentro do
+    // limite de tamanho. A escrita fica restrita por regra de negocio no
+    // client (cada tela so faz upload no proprio fluxo).
+    match /{pasta}/{id}/{fileName} {
+      allow read: if logado();
+      allow write: if logado() && ehImagemValida();
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "appname-seed",
+  "description": "Popula o Firestore com lojas e pedidos de exemplo pra testar o APPNAME",
+  "main": "seed.js",
+  "scripts": {
+    "seed": "node seed.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.6.0",
+    "geofire-common": "^6.0.0"
+  },
+  "private": true
+}
