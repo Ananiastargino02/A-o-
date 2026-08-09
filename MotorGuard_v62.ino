@@ -367,8 +367,9 @@ volatile float fuel_dif_l = 0.0f, fuel_dif_pct = 0.0f;
 volatile uint8_t fuel_aprendizado = 0;       // 0..5 abastecimentos validos
 float fuel_tanque_l = 0.0f;                  // capacidade cadastrada
 char  fuel_veiculo[32] = "Veiculo";          // texto simples mostrado ao usuario
-float fuel_fator = 1.0f;                     // CALIBRACAO aprendida: litros reais / estimativa crua
+float fuel_fator = 1.0f;                     // CALIBRACAO: litros reais / estimativa crua (so via fill confiavel)
 float fuel_l_raw = 0.0f;                     // estimativa CRUA (tanque*delta), antes do fator
+bool  fuel_calibrado = false;                // ja calibrou com um abastecimento CONFIAVEL?
 static int fuel_pct_estavel = -1;
 static int fuel_pct_pre_parada = -1;
 static bool fuel_motor_estava_ligado = false;
@@ -387,6 +388,7 @@ static void fuelAnaliseSalvar() {
   fp.putBool("alert", alerta_combustivel_discrep);
   fp.putFloat("fator", fuel_fator);
   fp.putFloat("raw", fuel_l_raw);
+  fp.putBool("calib", fuel_calibrado);
   fp.end();
 }
 static void fuelAnaliseCarregar() {
@@ -402,44 +404,52 @@ static void fuelAnaliseCarregar() {
   fuel_fator = fp.getFloat("fator", 1.0f);
   if (fuel_fator < FUEL_FATOR_MIN || fuel_fator > FUEL_FATOR_MAX) fuel_fator = 1.0f;
   fuel_l_raw = fp.getFloat("raw", 0.0f);
+  fuel_calibrado = fp.getBool("calib", false);
   fp.end();
 }
 static uint8_t fuelConfiancaPct() {
   if (fuel_tanque_l < 10.0f || fuel_metodo == 3 || fuel_metodo == 0) return 0;
-  int c = 40 + fuel_aprendizado * 12; if (c > 100) c = 100;
+  if (!fuel_calibrado) return 50;                 // ja funciona (5%/1L), mas sem calibracao fina
+  int c = 70 + fuel_aprendizado * 6; if (c > 100) c = 100;
   return (uint8_t)c;
 }
+
+// Abastecimento CONFIAVEL (posto que voce confia): calibra a boia/tanque.
+// O golpe do posto e ~10% SEMPRE — por isso NUNCA calibramos com um fill normal
+// (isso ensinaria o aparelho a achar a fraude "normal" e ele pararia de alertar).
+// So um fill que VOCE marca como honesto ajusta o fator.
+static void fuelCalibrar(float litros_reais) {
+  if (fuel_l_raw <= 0.1f || litros_reais <= 0.1f) return;
+  float ratio = litros_reais / fuel_l_raw;
+  if (ratio < FUEL_FATOR_MIN) ratio = FUEL_FATOR_MIN;
+  if (ratio > FUEL_FATOR_MAX) ratio = FUEL_FATOR_MAX;
+  // 1a calibracao aplica direto; as seguintes afinam por media movel
+  fuel_fator = fuel_calibrado ? (fuel_fator * (1.0f - FUEL_LEARN_A) + ratio * FUEL_LEARN_A) : ratio;
+  if (fuel_fator < FUEL_FATOR_MIN) fuel_fator = FUEL_FATOR_MIN;
+  if (fuel_fator > FUEL_FATOR_MAX) fuel_fator = FUEL_FATOR_MAX;
+  fuel_calibrado = true;
+  if (fuel_aprendizado < 5) fuel_aprendizado++;
+  fuel_l_informado = litros_reais;
+  fuel_l_estimado = fuel_l_raw * fuel_fator;
+  fuel_dif_l = 0; fuel_dif_pct = 0; alerta_combustivel_discrep = false;
+  fuel_abast_pendente = false;
+  fuelAnaliseSalvar();
+}
+
+// Abastecimento NORMAL (suspeito): so COMPARA, nunca calibra.
 static void fuelInformarBomba(float litros) {
   if (!fuel_abast_pendente || fuel_l_raw <= 0.1f || litros <= 0.1f) return;
   fuel_l_informado = litros;
-  // aplica a CALIBRACAO aprendida na estimativa crua
-  float corrigido = fuel_l_raw * fuel_fator;
-  fuel_l_estimado = corrigido;                 // passa a mostrar o valor calibrado
-  fuel_dif_l = litros - corrigido;
+  float corrigido = fuel_l_raw * fuel_fator;   // fator=1.0 enquanto nao calibrou
+  fuel_l_estimado = corrigido;
+  fuel_dif_l = litros - corrigido;             // bomba - real. Positivo = bomba marcou a mais
   fuel_dif_pct = (litros > 0.1f) ? (fabsf(fuel_dif_l) * 100.0f / litros) : 0.0f;
   float absL = fabsf(fuel_dif_l);
-  bool madura = (fuel_aprendizado >= 3);
-
-  // APRENDE a calibracao do tanque (corrige a nao-linearidade da boia / tanque
-  // cadastrado errado), MAS nao deixa um outlier grande (fraude) envenenar o fator:
-  //  - so calibra com abastecimento fisicamente plausivel (ratio 0.6..1.4);
-  //  - se ja estiver madura, so calibra se estiver PERTO do fator ja aprendido.
-  float ratio = litros / fuel_l_raw;           // fator "ideal" deste abastecimento
-  if (ratio >= FUEL_FATOR_MIN && ratio <= FUEL_FATOR_MAX) {
-    float desvio = fabsf(ratio - fuel_fator) / fuel_fator;
-    if (!madura || desvio <= 0.15f) {
-      fuel_fator = fuel_fator * (1.0f - FUEL_LEARN_A) + ratio * FUEL_LEARN_A;   // media movel
-      if (fuel_fator < FUEL_FATOR_MIN) fuel_fator = FUEL_FATOR_MIN;
-      if (fuel_fator > FUEL_FATOR_MAX) fuel_fator = FUEL_FATOR_MAX;
-    }
-  }
-  if (fuel_aprendizado < 5) fuel_aprendizado++;
-
-  // ALERTA: discrepancia GRITANTE alerta mesmo aprendendo; a sutil (>=5%) so depois
-  // de madura (calibracao assentada), pra nao acusar erro de boia como fraude.
-  bool gritante = (fuel_dif_pct >= 15.0f && absL >= 2.0f);
-  bool sutil    = (madura && fuel_dif_pct >= FUEL_ALERTA_PCT && absL >= FUEL_ALERTA_L_MIN);
-  alerta_combustivel_discrep = (gritante || sutil);
+  // Alerta desde a 1a abastecida:
+  //  - sem calibracao fina: 5% E 1L (pega o golpe de ~10% com folga);
+  //  - ja calibrado: aperta pra 500 ml (limitado pela resolucao da boia, ~1% do tanque).
+  if (fuel_calibrado) alerta_combustivel_discrep = (absL >= 0.5f);
+  else                alerta_combustivel_discrep = (fuel_dif_pct >= FUEL_ALERTA_PCT && absL >= FUEL_ALERTA_L_MIN);
   if (alerta_combustivel_discrep) evtRegistrar(6, (int16_t)lroundf(fuel_dif_pct * 10.0f), "FUEL");
   fuel_abast_pendente = false;
   fuelAnaliseSalvar();
@@ -5574,8 +5584,8 @@ void atualizarCombustivel(const DadosCarro& d) {
   uint8_t conf=fuelConfiancaPct();
   if (fuel_metodo==3 || d.combust<0) snprintf(b,sizeof(b),"Analise indisponivel neste veiculo");
   else if (fuel_tanque_l<10) snprintf(b,sizeof(b),"Cadastre o veiculo no app");
-  else if (fuel_aprendizado<3) snprintf(b,sizeof(b),"Aprendendo o tanque  |  confianca %u%%",conf);
-  else snprintf(b,sizeof(b),"Analise ativa  |  confianca %u%%",conf);
+  else if (!fuel_calibrado) snprintf(b,sizeof(b),"Ativa: alerta 5%%/1L  |  calibre num posto de confianca");
+  else snprintf(b,sizeof(b),"Calibrada: alerta ~500ml  |  confianca %u%%",conf);
   lv_label_set_text(fuelLblStatus,b);
 }
 
@@ -5933,11 +5943,11 @@ String executarComandoApp(String cmd) {
     if (tank < 20 || tank > 200 || nome.length()<2) return "ERRO: dados do veiculo invalidos";
     fuel_tanque_l=tank; strncpy(fuel_veiculo,nome.c_str(),sizeof(fuel_veiculo)-1); fuel_veiculo[sizeof(fuel_veiculo)-1]=0;
     fuel_aprendizado=0; fuel_abast_pendente=false; alerta_combustivel_discrep=false;
-    fuel_fator=1.0f; fuel_l_raw=0.0f;   // zera a calibracao aprendida (carro/tanque novo)
+    fuel_fator=1.0f; fuel_l_raw=0.0f; fuel_calibrado=false;   // zera a calibracao (carro/tanque novo)
     fuelAnaliseSalvar();
     return "OK: veiculo="+nome+" tanque="+String(tank,1)+"L";
   }
-  // Depois de abastecer, o app envia o volume exibido pela bomba.
+  // Depois de abastecer, o app envia o volume exibido pela bomba (fill NORMAL/suspeito).
   // Ex.: FUEL BOMBA 40.0
   if (up.startsWith("FUEL BOMBA ")) {
     float l=cmd.substring(11).toFloat();
@@ -5946,10 +5956,20 @@ String executarComandoApp(String cmd) {
     fuelInformarBomba(l);
     return "OK: bomba="+String(l,1)+"L veican="+String(fuel_l_estimado,1)+"L dif="+String(fuel_dif_pct,1)+"%";
   }
+  // Abastecimento CONFIAVEL (posto que voce confia): calibra a boia. So use quando
+  // tiver certeza que a bomba foi honesta. Depois disso o alerta aperta pra ~500ml.
+  // Ex.: FUEL CALIBRAR 40.0
+  if (up.startsWith("FUEL CALIBRAR ")) {
+    float l=cmd.substring(14).toFloat();
+    if (!fuel_abast_pendente) return "ERRO: nenhum abastecimento detectado";
+    if (l < 1 || l > 200) return "ERRO: litros invalidos";
+    fuelCalibrar(l);
+    return "OK: calibrado com "+String(l,1)+"L (fator="+String(fuel_fator,3)+"). Agora alerta a partir de ~500ml.";
+  }
   if (up == "FUEL STATUS") {
     return "car="+String(fuel_veiculo)+" tank="+String(fuel_tanque_l,1)+" nivel="+String((int)dados_publicos.combust)+
            "% est="+String(fuel_l_estimado,1)+" inf="+String(fuel_l_informado,1)+" dif="+String(fuel_dif_pct,1)+
-           "% fator="+String(fuel_fator,3)+" conf="+String(fuelConfiancaPct())+"%";
+           "% fator="+String(fuel_fator,3)+(fuel_calibrado?" calibrado":" nao-calib")+" conf="+String(fuelConfiancaPct())+"%";
   }
 
   // ===== Diagnostico (DTCs) via BLE: dispara a leitura na taskCAN e espera o resultado =====
