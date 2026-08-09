@@ -61,6 +61,7 @@ struct OdoSlot;
 struct DtcInfo;   // banco de DTC (infoDTC devolve const DtcInfo*)
 struct FsHdr;     // header dos arquivos LittleFS (fsSaveAtomic/fsLoadValid)
 struct Evento;    // historico de eventos (evtGet recebe Evento&)
+void evtRegistrar(uint8_t tipo, int16_t v, const char* cod);
 
 // (fontes agora sao do LVGL: montserrat 14/28/40)
 
@@ -109,7 +110,7 @@ struct Evento;    // historico de eventos (evtGet recebe Evento&)
 //  Versao do firmware (v7) - aparece na tela Sistema e no serial.
 //  Usada tambem pelo OTA (comparar versao antes de atualizar no campo).
 // ============================================================
-#define FIRMWARE_VERSION "7.0.0"
+#define FIRMWARE_VERSION "7.1.0"   // 7.1: analise de discrepancia de abastecimento
 #define FIRMWARE_NOME    "VEICAN"
 
 // ============================================================
@@ -232,7 +233,7 @@ volatile uint32_t log_total = 0;
 volatile uint8_t pagina_atual = 0;
 volatile uint8_t pagina_anterior = 255;
 volatile bool entrou_pagina = false;  // true no 1o frame apos trocar de pagina (forca redesenho)
-const uint8_t TOTAL_PAGINAS = 7;  // 0 cockpit,1 diag,2 sistema,3 manut,4 ajuste,5 temas,6 historico
+const uint8_t TOTAL_PAGINAS = 8;  // 0 cockpit,1 combustivel,2 diag,3 sistema,4 manut,5 ajuste,6 temas,7 historico
 
 // ===== NOVO: Estados da página de ajuste de hora/data =====
 #define AJUSTE_ESTADO_MENU    0
@@ -348,6 +349,103 @@ static const FuelBroadcast FUEL_TABLE[] = {
 };
 static const int FUEL_TABLE_N = sizeof(FUEL_TABLE) / sizeof(FUEL_TABLE[0]);
 
+
+// ===== ANALISE DE ABASTECIMENTO (v8) =====
+// Objetivo: detectar apenas discrepancias GRANDES. Nao e instrumento metrologico.
+// O volume estimado vem da variacao do nivel do tanque; pequenos erros sao ignorados.
+#define FUEL_ALERTA_PCT       5.0f   // alerta a partir de 5% de discrepancia
+#define FUEL_ALERTA_L_MIN     1.0f   // e pelo menos 1,0 L de diferenca
+#define FUEL_SUBIDA_MIN_PCT   5      // subida minima para considerar abastecimento
+volatile bool  fuel_abast_pendente = false;
+volatile bool  alerta_combustivel_discrep = false;
+volatile int   fuel_pct_antes = -1, fuel_pct_depois = -1;
+volatile float fuel_l_estimado = 0.0f, fuel_l_informado = 0.0f;
+volatile float fuel_dif_l = 0.0f, fuel_dif_pct = 0.0f;
+volatile uint8_t fuel_aprendizado = 0;       // 0..5 abastecimentos validos
+float fuel_tanque_l = 0.0f;                  // capacidade cadastrada
+char  fuel_veiculo[32] = "Veiculo";          // texto simples mostrado ao usuario
+static int fuel_pct_estavel = -1;
+static int fuel_pct_pre_parada = -1;
+static bool fuel_motor_estava_ligado = false;
+static uint32_t fuel_estavel_desde = 0;
+
+static void fuelAnaliseSalvar() {
+  Preferences fp; fp.begin("fuelana", false);
+  fp.putFloat("tank", fuel_tanque_l);
+  fp.putString("car", fuel_veiculo);
+  fp.putUChar("learn", fuel_aprendizado);
+  fp.putFloat("est", fuel_l_estimado);
+  fp.putFloat("inf", fuel_l_informado);
+  fp.putFloat("difl", fuel_dif_l);
+  fp.putFloat("difp", fuel_dif_pct);
+  fp.putBool("pend", fuel_abast_pendente);
+  fp.putBool("alert", alerta_combustivel_discrep);
+  fp.end();
+}
+static void fuelAnaliseCarregar() {
+  Preferences fp; fp.begin("fuelana", true);
+  fuel_tanque_l = fp.getFloat("tank", 0.0f);
+  String car = fp.getString("car", "Veiculo");
+  strncpy(fuel_veiculo, car.c_str(), sizeof(fuel_veiculo)-1); fuel_veiculo[sizeof(fuel_veiculo)-1]=0;
+  fuel_aprendizado = fp.getUChar("learn", 0); if (fuel_aprendizado > 5) fuel_aprendizado = 5;
+  fuel_l_estimado = fp.getFloat("est", 0.0f); fuel_l_informado = fp.getFloat("inf", 0.0f);
+  fuel_dif_l = fp.getFloat("difl", 0.0f); fuel_dif_pct = fp.getFloat("difp", 0.0f);
+  fuel_abast_pendente = fp.getBool("pend", false);
+  alerta_combustivel_discrep = fp.getBool("alert", false);
+  fp.end();
+}
+static uint8_t fuelConfiancaPct() {
+  if (fuel_tanque_l < 10.0f || fuel_metodo == 3 || fuel_metodo == 0) return 0;
+  int c = 40 + fuel_aprendizado * 12; if (c > 100) c = 100;
+  return (uint8_t)c;
+}
+static void fuelInformarBomba(float litros) {
+  if (!fuel_abast_pendente || fuel_l_estimado <= 0.1f || litros <= 0.1f) return;
+  fuel_l_informado = litros;
+  fuel_dif_l = litros - fuel_l_estimado;
+  fuel_dif_pct = (litros > 0.1f) ? (fuel_dif_l * 100.0f / litros) : 0.0f;
+  if (fuel_dif_pct < 0) fuel_dif_pct = -fuel_dif_pct;
+  float absL = fuel_dif_l < 0 ? -fuel_dif_l : fuel_dif_l;
+  alerta_combustivel_discrep = (fuel_dif_pct >= FUEL_ALERTA_PCT && absL >= FUEL_ALERTA_L_MIN && fuelConfiancaPct() >= 40);
+  if (fuel_aprendizado < 5) fuel_aprendizado++;
+  if (alerta_combustivel_discrep) evtRegistrar(6, (int16_t)lroundf(fuel_dif_pct * 10.0f), "FUEL");
+  fuel_abast_pendente = false;
+  fuelAnaliseSalvar();
+}
+
+// Chamada 1x/s. Aprende a estabilidade do sensor e detecta uma subida grande do nivel.
+// A comparacao em litros so acontece depois que o app informa quanto a bomba marcou.
+static void fuelAprenderEDetectar(const DadosCarro& d) {
+  int pct = d.combust;
+  if (pct < 0 || pct > 100 || fuel_tanque_l < 10.0f) return;
+  uint32_t agora = millis();
+  static int candidato = -1;
+  static uint32_t religou_em = 0;
+  if (candidato < 0 || abs(pct - candidato) > 1) { candidato = pct; fuel_estavel_desde = agora; }
+  if (agora - fuel_estavel_desde >= 5000) fuel_pct_estavel = candidato;  // 5 s estavel
+  bool ligado = d.rpm > 0;
+
+  // Guarda o nivel estabilizado imediatamente antes de desligar para abastecer.
+  if (fuel_motor_estava_ligado && !ligado && fuel_pct_estavel >= 0) {
+    fuel_pct_pre_parada = fuel_pct_estavel;
+    religou_em = 0;
+  }
+  // Ao religar, NAO compara imediatamente: espera o sensor/boia estabilizar.
+  if (!fuel_motor_estava_ligado && ligado && fuel_pct_pre_parada >= 0) religou_em = agora;
+  if (ligado && religou_em && agora - religou_em >= 8000 && fuel_pct_estavel >= 0) {
+    int delta = fuel_pct_estavel - fuel_pct_pre_parada;
+    if (delta >= FUEL_SUBIDA_MIN_PCT) {
+      fuel_pct_antes = fuel_pct_pre_parada; fuel_pct_depois = fuel_pct_estavel;
+      fuel_l_estimado = fuel_tanque_l * ((float)delta / 100.0f);
+      fuel_l_informado = 0; fuel_dif_l = 0; fuel_dif_pct = 0;
+      fuel_abast_pendente = true; alerta_combustivel_discrep = false;
+      fuelAnaliseSalvar();
+      Serial.printf("[Fuel] abastecimento detectado: %d%% -> %d%%, estimado %.2f L\n", fuel_pct_antes, fuel_pct_depois, fuel_l_estimado);
+    }
+    fuel_pct_pre_parada = -1; religou_em = 0;
+  }
+  fuel_motor_estava_ligado = ligado;
+}
 volatile uint16_t debug_log_head = 0;
 volatile uint16_t debug_log_count = 0;
 volatile uint32_t ultimo_heartbeat = 0;
@@ -926,7 +1024,7 @@ static const char* VBAT_FILE = "/vbat.bin";
 
 // ---- Historico de eventos (DTC / alertas / picos) ----
 #define EVT_HIST_N 20
-// tipo: 0=DTC  1=TEMP ALTA  2=BATERIA FRACA  3=ALTERNADOR  4=SUPERAQUEC.  5=INFO
+// tipo: 0=DTC  1=TEMP ALTA  2=BATERIA FRACA  3=ALTERNADOR  4=SUPERAQUEC.  5=INFO  6=COMBUSTIVEL
 struct Evento { uint32_t ts; uint8_t tipo; int16_t v; char cod[6]; };
 Evento   evt_hist[EVT_HIST_N];
 uint8_t  evt_n = 0;         // quantos validos (ate EVT_HIST_N, ring)
@@ -3364,6 +3462,7 @@ void taskAlertas(void* param) {
       }
     } else { off_desde = 0; }
 
+    fuelAprenderEDetectar(d);
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
 }
@@ -3521,6 +3620,7 @@ static lv_obj_t *meter; static lv_meter_indicator_t *indArco;
 static lv_obj_t *meter2 = NULL; static lv_meter_indicator_t *indArco2 = NULL;  // 2o mostrador (cluster)
 static lv_obj_t *barFuel = NULL, *barTemp = NULL;   // niveis combustivel/temp (cluster)
 static lv_obj_t *lblVel, *lblRpm, *lblTemp, *lblData, *lblVoltTit, *lblVolt, *lblComb, *lblHora;
+static lv_obj_t *gFuelPage=NULL, *fuelLblCar=NULL, *fuelLblNivel=NULL, *fuelLblUlt=NULL, *fuelLblDif=NULL, *fuelLblStatus=NULL;
 static lv_obj_t *popup, *popupMsg, *popupIcon;
 static lv_obj_t *barRpm = NULL, *barVel = NULL;   // para estilos com barra
 static lv_obj_t *batBody = NULL, *batFill = NULL, *batTxt = NULL, *batNub = NULL;   // bateria estilo iPhone
@@ -4459,6 +4559,7 @@ void atualizarCockpit(DadosCarro &d) {
     }
     // v7: aviso PREDITIVO de bateria (tendencia de repouso caindo ao longo dos dias)
     if (alerta_bateria_prev && alertCnt < 6) snprintf(alerts[alertCnt++], 20, "TROCAR BATERIA");
+    if (alerta_combustivel_discrep && alertCnt < 6) snprintf(alerts[alertCnt++], 20, "COMBUSTIVEL %.0f%%", fuel_dif_pct);
     for (int i = 0; i < NUM_ITENS_MANUT && alertCnt < 6; i++)
       if (itemVencido(i, km, ts)) snprintf(alerts[alertCnt++], 20, "TROCAR %s", NOMES_ITENS[i]);
     if (alertCnt > 0) alertIdx = alertIdx % alertCnt; else alertIdx = 0;
@@ -5243,6 +5344,7 @@ const char* evtTipoTexto(uint8_t t) {
     case 2: return "Bateria";
     case 3: return "Alternador";
     case 4: return "SUPERAQUEC.";
+    case 6: return "Combustivel";
     default: return "Info";
   }
 }
@@ -5253,6 +5355,7 @@ uint32_t evtTipoCor(uint8_t t) {
     case 2: return 0xFFC107;   // bateria - amarelo
     case 3: return 0xFFC107;   // alternador - amarelo
     case 0: return 0xFF8A80;   // DTC - rosa
+    case 6: return 0xFFC107;   // combustivel - amarelo
     default: return 0x90A4AE;
   }
 }
@@ -5318,6 +5421,8 @@ void atualizarHistorico() {
       snprintf(linha, sizeof(linha), "%s  %s %dC\n", quando, evtTipoTexto(e.tipo), e.v);
     else if (e.tipo == 2 || e.tipo == 3)
       snprintf(linha, sizeof(linha), "%s  %s %.1fV\n", quando, evtTipoTexto(e.tipo), e.v / 100.0);
+    else if (e.tipo == 6)
+      snprintf(linha, sizeof(linha), "%s  %s dif. %.1f%%\n", quando, evtTipoTexto(e.tipo), e.v / 10.0);
     else
       snprintf(linha, sizeof(linha), "%s  %s\n", quando, evtTipoTexto(e.tipo));
     strncat(txt, linha, sizeof(txt) - strlen(txt) - 1);
@@ -5393,16 +5498,65 @@ void rodarOnboarding() {
   lv_obj_clean(scr);
 }
 
+
+// ============================================================
+//  Pagina COMBUSTIVEL - somente informacoes uteis ao motorista
+// ============================================================
+void montarCombustivel() {
+  lv_obj_t* scr = lv_scr_act();
+  gFuelPage = lv_obj_create(scr); lv_obj_set_size(gFuelPage, LV_W, LV_H); lv_obj_center(gFuelPage);
+  lv_obj_set_style_bg_color(gFuelPage, lv_color_hex(0x05070D), 0); lv_obj_set_style_border_width(gFuelPage, 0, 0);
+  lv_obj_set_style_pad_all(gFuelPage, 0, 0); lv_obj_clear_flag(gFuelPage, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_t* tit = lv_label_create(gFuelPage); lv_label_set_text(tit, "COMBUSTIVEL");
+  lv_obj_set_style_text_font(tit, &lv_font_montserrat_28, 0); lv_obj_set_style_text_color(tit, lv_color_hex(0x4DD0E1), 0);
+  lv_obj_align(tit, LV_ALIGN_TOP_MID, 0, 6);
+  fuelLblCar = lv_label_create(gFuelPage); lv_obj_set_style_text_font(fuelLblCar, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(fuelLblCar, lv_color_hex(0x90A4AE), 0); lv_obj_align(fuelLblCar, LV_ALIGN_TOP_MID, 0, 40);
+  fuelLblNivel = lv_label_create(gFuelPage); lv_obj_set_style_text_font(fuelLblNivel, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(fuelLblNivel, lv_color_white(), 0); lv_obj_align(fuelLblNivel, LV_ALIGN_TOP_LEFT, 14, 67);
+  fuelLblUlt = lv_label_create(gFuelPage); lv_obj_set_style_text_font(fuelLblUlt, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(fuelLblUlt, lv_color_hex(0xCFD8DC), 0); lv_obj_set_pos(fuelLblUlt, 14, 108);
+  fuelLblDif = lv_label_create(gFuelPage); lv_obj_set_style_text_font(fuelLblDif, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(fuelLblDif, lv_color_hex(0x69F0AE), 0); lv_obj_set_pos(fuelLblDif, 14, 142);
+  fuelLblStatus = lv_label_create(gFuelPage); lv_obj_set_style_text_font(fuelLblStatus, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(fuelLblStatus, lv_color_hex(0x90A4AE), 0); lv_obj_set_pos(fuelLblStatus, 14, 190);
+}
+void atualizarCombustivel(const DadosCarro& d) {
+  if (!gFuelPage) return;
+  char b[96];
+  if (fuel_tanque_l >= 10) snprintf(b,sizeof(b),"%s  |  %.0f L", fuel_veiculo, fuel_tanque_l); else snprintf(b,sizeof(b),"%s", fuel_veiculo);
+  lv_label_set_text(fuelLblCar,b);
+  if (d.combust >= 0 && fuel_tanque_l >= 10) snprintf(b,sizeof(b),"Nivel %d%%   ~%.1f L", d.combust, fuel_tanque_l*d.combust/100.0f);
+  else if (d.combust >= 0) snprintf(b,sizeof(b),"Nivel %d%%", d.combust); else snprintf(b,sizeof(b),"Nivel --");
+  lv_label_set_text(fuelLblNivel,b);
+  if (fuel_abast_pendente) snprintf(b,sizeof(b),"Abastecimento estimado: %.1f L\nInforme no app quanto a bomba marcou", fuel_l_estimado);
+  else if (fuel_l_informado > 0) snprintf(b,sizeof(b),"Bomba: %.1f L   VEICAN: %.1f L", fuel_l_informado, fuel_l_estimado);
+  else snprintf(b,sizeof(b),"Aguardando abastecimento");
+  lv_label_set_text(fuelLblUlt,b);
+  if (fuel_l_informado > 0) {
+    snprintf(b,sizeof(b),"Diferenca: %.1f L  (%.1f%%)", fuel_dif_l<0?-fuel_dif_l:fuel_dif_l, fuel_dif_pct);
+    lv_obj_set_style_text_color(fuelLblDif, lv_color_hex(alerta_combustivel_discrep?0xFF5252:0x69F0AE), 0);
+  } else snprintf(b,sizeof(b),"Diferenca: --");
+  lv_label_set_text(fuelLblDif,b);
+  uint8_t conf=fuelConfiancaPct();
+  if (fuel_metodo==3 || d.combust<0) snprintf(b,sizeof(b),"Analise indisponivel neste veiculo");
+  else if (fuel_tanque_l<10) snprintf(b,sizeof(b),"Cadastre o veiculo no app");
+  else if (fuel_aprendizado<3) snprintf(b,sizeof(b),"Aprendendo o tanque  |  confianca %u%%",conf);
+  else snprintf(b,sizeof(b),"Analise ativa  |  confianca %u%%",conf);
+  lv_label_set_text(fuelLblStatus,b);
+}
+
 void construirPagina(uint8_t pag) {
   lv_obj_clean(lv_scr_act());
   lv_obj_set_style_bg_color(lv_scr_act(), lv_color_hex(0x05070D), 0);
   if (pag == 0)      montarCockpit();
-  else if (pag == 1) montarDiag();
-  else if (pag == 2) montarSistema();
-  else if (pag == 3) montarManut();
-  else if (pag == 4) montarAjuste();
-  else if (pag == 5) montarTemas();
-  else               montarHistorico();   // pag == 6
+  else if (pag == 1) montarCombustivel();
+  else if (pag == 2) montarDiag();
+  else if (pag == 3) montarSistema();
+  else if (pag == 4) montarManut();
+  else if (pag == 5) montarAjuste();
+  else if (pag == 6) montarTemas();
+  else               montarHistorico();   // pag == 7
   pagina_montada_nova = true;
 }
 
@@ -5460,12 +5614,13 @@ void taskTela(void* param) {
     }
     STAGE_TELA("atualizar");
     if (pagina_atual == 0)      atualizarCockpit(d);
-    else if (pagina_atual == 1) atualizarDiag();
-    else if (pagina_atual == 2) atualizarSistema();
-    else if (pagina_atual == 3) atualizarManut();
-    else if (pagina_atual == 4) atualizarAjuste();
-    else if (pagina_atual == 5) atualizarTemas();
-    else if (pagina_atual == 6) atualizarHistorico();
+    else if (pagina_atual == 1) atualizarCombustivel(d);
+    else if (pagina_atual == 2) atualizarDiag();
+    else if (pagina_atual == 3) atualizarSistema();
+    else if (pagina_atual == 4) atualizarManut();
+    else if (pagina_atual == 5) atualizarAjuste();
+    else if (pagina_atual == 6) atualizarTemas();
+    else if (pagina_atual == 7) atualizarHistorico();
 
     STAGE_TELA("lv_timer_handler");
     lv_timer_handler();
@@ -5735,6 +5890,33 @@ String executarComandoApp(String cmd) {
   }
   if (up == "SPEEDHIST") return speedHistString();   // historico de velocidade (gravado no aparelho)
 
+  // ===== Combustivel: cadastro simples do veiculo + litros mostrados pela bomba =====
+  // App envia: FUEL CAR <capacidade_litros> <nome do carro>
+  // Ex.: FUEL CAR 75 Azera 2013
+  if (up.startsWith("FUEL CAR ")) {
+    String args = cmd.substring(9); args.trim(); int sp=args.indexOf(' ');
+    if (sp < 0) return "Uso: FUEL CAR <litros> <veiculo>";
+    float tank=args.substring(0,sp).toFloat(); String nome=args.substring(sp+1); nome.trim();
+    if (tank < 20 || tank > 200 || nome.length()<2) return "ERRO: dados do veiculo invalidos";
+    fuel_tanque_l=tank; strncpy(fuel_veiculo,nome.c_str(),sizeof(fuel_veiculo)-1); fuel_veiculo[sizeof(fuel_veiculo)-1]=0;
+    fuel_aprendizado=0; fuel_abast_pendente=false; alerta_combustivel_discrep=false; fuelAnaliseSalvar();
+    return "OK: veiculo="+nome+" tanque="+String(tank,1)+"L";
+  }
+  // Depois de abastecer, o app envia o volume exibido pela bomba.
+  // Ex.: FUEL BOMBA 40.0
+  if (up.startsWith("FUEL BOMBA ")) {
+    float l=cmd.substring(11).toFloat();
+    if (!fuel_abast_pendente) return "ERRO: nenhum abastecimento detectado";
+    if (l < 1 || l > 200) return "ERRO: litros invalidos";
+    fuelInformarBomba(l);
+    return "OK: bomba="+String(l,1)+"L veican="+String(fuel_l_estimado,1)+"L dif="+String(fuel_dif_pct,1)+"%";
+  }
+  if (up == "FUEL STATUS") {
+    return "car="+String(fuel_veiculo)+" tank="+String(fuel_tanque_l,1)+" nivel="+String((int)dados_publicos.combust)+
+           "% est="+String(fuel_l_estimado,1)+" inf="+String(fuel_l_informado,1)+" dif="+String(fuel_dif_pct,1)+
+           "% conf="+String(fuelConfiancaPct())+"%";
+  }
+
   // ===== Diagnostico (DTCs) via BLE: dispara a leitura na taskCAN e espera o resultado =====
   if (up == "DTC LER") {
     diag_solicitar_leitura = true;
@@ -5789,7 +5971,7 @@ String executarComandoApp(String cmd) {
     return "OK: KMCAL=" + String(km_cal, 4);
   }
 
-  return "Cmds: STATUS | MANUT LIST | MANUT RESET <n> | MANUT KM <n> <km> | MANUT DIAS <n> <dias> | DTC LER | DTC APAGAR | VOLTCAL <v> | KMCAL <r> <m> | ODORESET";
+  return "Cmds: STATUS | MANUT LIST | MANUT RESET <n> | MANUT KM <n> <km> | MANUT DIAS <n> <dias> | DTC LER | DTC APAGAR | VOLTCAL <v> | KMCAL <r> <m> | ODORESET | FUEL CAR <L> <veiculo> | FUEL BOMBA <L> | FUEL STATUS";
 }
 
 // Compativel com NimBLE-Arduino 1.x e 2.x (a assinatura do onWrite mudou na 2.x).
@@ -5948,6 +6130,7 @@ void setup() {
   cockpitEstiloCarregar();   // estilo do painel escolhido
   klineTempOffCarregar();    // calibracao do offset de temperatura K-line
   fuelCfgCarregar();         // config do combustivel broadcast (HYFUEL) salva
+  fuelAnaliseCarregar();     // cadastro/estado da analise de abastecimento
   // primeiro uso? le e ja marca (single-thread aqui, sem corrida)
   speedPrefs.begin("veican", true);
   g_primeiro_uso = (speedPrefs.getInt("ob7", 0) == 0);
@@ -6043,7 +6226,7 @@ static void botaoOK() {
   } else if (sistema_confirma_zerar) {
     if (sistema_confirma_selecionado == 0) formatarHodometro();
     sistema_confirma_zerar = false;
-  } else if (pagina_atual == 4 && nav_modo == NAV_MODO_EDICAO) {
+  } else if (pagina_atual == 5 && nav_modo == NAV_MODO_EDICAO) {
     if (ajuste_estado >= AJUSTE_ESTADO_DIA && ajuste_estado < AJUSTE_ESTADO_SEG) {
       ajuste_estado++;
     } else if (ajuste_estado == AJUSTE_ESTADO_SEG) {
@@ -6057,13 +6240,13 @@ static void botaoOK() {
       nav_modo = NAV_MODO_VISUALIZACAO;
     }
   } else if (nav_modo == NAV_MODO_VISUALIZACAO) {
-    if (pagina_atual == 1) {
+    if (pagina_atual == 2) {
       nav_modo = NAV_MODO_EDICAO;
-    } else if (pagina_atual == 3) {
+    } else if (pagina_atual == 4) {
       nav_modo = NAV_MODO_EDICAO;
       item_manut_selecionado = 0;
       resetCache();
-    } else if (pagina_atual == 4) {
+    } else if (pagina_atual == 5) {
       if (xSemaphoreTake(mutex_hora, pdMS_TO_TICKS(100)) == pdTRUE) {
         ajuste_dia = data_dia; ajuste_mes = data_mes; ajuste_ano = (uint8_t)(data_ano - 2000);
         ajuste_hora = hora_h; ajuste_min = hora_m; ajuste_seg = hora_s;
@@ -6071,13 +6254,13 @@ static void botaoOK() {
       }
       ajuste_estado = AJUSTE_ESTADO_DIA;
       nav_modo = NAV_MODO_EDICAO;
-    } else if (pagina_atual == 2 || pagina_atual == 6) {
+    } else if (pagina_atual == 1 || pagina_atual == 3 || pagina_atual == 7) {
       pagina_atual = (pagina_atual + 1) % TOTAL_PAGINAS;   // Sistema/Historico: OK so avança
-    } else if (pagina_atual == 5) {
+    } else if (pagina_atual == 6) {
       nav_modo = NAV_MODO_EDICAO;   // Temas: entra p/ escolher o estilo
     }
   } else {
-    if (pagina_atual == 1) {
+    if (pagina_atual == 2) {
       switch (diag_estado) {
         case DIAG_ESTADO_MENU:
           if (diag_menu_selecionado == 0) { diag_estado = DIAG_ESTADO_LENDO; diag_solicitar_leitura = true; }
@@ -6091,9 +6274,9 @@ static void botaoOK() {
           break;
         case DIAG_ESTADO_APAGADO_OK: diag_estado = DIAG_ESTADO_MENU; break;
       }
-    } else if (pagina_atual == 3) {
+    } else if (pagina_atual == 4) {
       nav_modo = NAV_MODO_VISUALIZACAO;
-    } else if (pagina_atual == 5) {
+    } else if (pagina_atual == 6) {
       cockpit_estilo = tema_sel;   // Temas: aplica e salva o estilo escolhido
       cockpitEstiloSalvar();
       nav_modo = NAV_MODO_VISUALIZACAO;
@@ -6145,14 +6328,14 @@ void taskBotoes(void* param) {
     if (agora_menu == LOW && !menu_longpress_disparado && t - menu_pressionado_em >= LONGPRESS_MS) {
       menu_longpress_disparado = true;
       if (pagina_atual == 0 && nav_modo == NAV_MODO_VISUALIZACAO) {
-        pagina_atual = 4;
-      } else if (pagina_atual == 3 && nav_modo == NAV_MODO_EDICAO && !manut_confirma_reset) {
+        pagina_atual = 5;
+      } else if (pagina_atual == 4 && nav_modo == NAV_MODO_EDICAO && !manut_confirma_reset) {
         manut_confirma_reset = true;
         manut_confirma_selecionado = 1;
-      } else if (pagina_atual == 4 && nav_modo == NAV_MODO_EDICAO) {
+      } else if (pagina_atual == 5 && nav_modo == NAV_MODO_EDICAO) {
         ajuste_estado = AJUSTE_ESTADO_MENU;
         nav_modo = NAV_MODO_VISUALIZACAO;
-      } else if (pagina_atual == 2 && nav_modo == NAV_MODO_VISUALIZACAO && !sistema_confirma_zerar) {
+      } else if (pagina_atual == 3 && nav_modo == NAV_MODO_VISUALIZACAO && !sistema_confirma_zerar) {
         sistema_confirma_zerar = true;
         sistema_confirma_selecionado = 1;
       }
@@ -6170,7 +6353,7 @@ void taskBotoes(void* param) {
     // ENTER abre o reset do item selecionado (sem precisar segurar MENU 4s).
     if (prev_enter == LOW && agora_enter == HIGH) {
       if (t - ultimo_enter > DEBOUNCE_MS) {
-        if (pagina_atual == 3 && nav_modo == NAV_MODO_EDICAO && !manut_confirma_reset) {
+        if (pagina_atual == 4 && nav_modo == NAV_MODO_EDICAO && !manut_confirma_reset) {
           manut_confirma_reset = true;
           manut_confirma_selecionado = 1;   // padrao NAO (seguranca)
         } else {
@@ -6184,7 +6367,7 @@ void taskBotoes(void* param) {
       if (prev_ant == HIGH && agora_ant == LOW) {
         if (sistema_confirma_zerar) {
           sistema_confirma_selecionado = (sistema_confirma_selecionado == 0) ? 1 : 0;
-        } else if (pagina_atual == 4 && nav_modo == NAV_MODO_EDICAO) {
+        } else if (pagina_atual == 5 && nav_modo == NAV_MODO_EDICAO) {
           if (ajuste_estado >= AJUSTE_ESTADO_DIA && ajuste_estado <= AJUSTE_ESTADO_SEG) {
             int idx = ajuste_estado - AJUSTE_ESTADO_DIA;
             volatile uint8_t* valores[] = {&ajuste_dia, &ajuste_mes, &ajuste_ano, &ajuste_hora, &ajuste_min, &ajuste_seg};
@@ -6195,7 +6378,7 @@ void taskBotoes(void* param) {
             if (idx == 1 || idx == 2) ajustaDiaValido();  // mudou mes/ano -> reajusta o dia
           }
         } else if (nav_modo == NAV_MODO_EDICAO) {
-          if (pagina_atual == 3) {
+          if (pagina_atual == 4) {
             if (manut_confirma_reset) {
               manut_confirma_selecionado = (manut_confirma_selecionado == 0) ? 1 : 0;
             } else {
@@ -6203,14 +6386,14 @@ void taskBotoes(void* param) {
               else item_manut_selecionado--;
               resetCache();
             }
-          } else if (pagina_atual == 1) {
+          } else if (pagina_atual == 2) {
             if (diag_estado == DIAG_ESTADO_MENU) {
               if (diag_menu_selecionado == 0) diag_menu_selecionado = 2;
               else diag_menu_selecionado--;
             } else if (diag_estado == DIAG_ESTADO_CONFIRMAR) {
               diag_confirma_selecionado = (diag_confirma_selecionado == 0) ? 1 : 0;
             }
-          } else if (pagina_atual == 5) {
+          } else if (pagina_atual == 6) {
             if (tema_sel == 0) tema_sel = 6; else tema_sel--;
           }
         } else {
@@ -6223,7 +6406,7 @@ void taskBotoes(void* param) {
       if (prev_prx == HIGH && agora_prx == LOW) {
         if (sistema_confirma_zerar) {
           sistema_confirma_selecionado = (sistema_confirma_selecionado == 0) ? 1 : 0;
-        } else if (pagina_atual == 4 && nav_modo == NAV_MODO_EDICAO) {
+        } else if (pagina_atual == 5 && nav_modo == NAV_MODO_EDICAO) {
           if (ajuste_estado >= AJUSTE_ESTADO_DIA && ajuste_estado <= AJUSTE_ESTADO_SEG) {
             int idx = ajuste_estado - AJUSTE_ESTADO_DIA;
             volatile uint8_t* valores[] = {&ajuste_dia, &ajuste_mes, &ajuste_ano, &ajuste_hora, &ajuste_min, &ajuste_seg};
@@ -6234,20 +6417,20 @@ void taskBotoes(void* param) {
             if (idx == 1 || idx == 2) ajustaDiaValido();  // mudou mes/ano -> reajusta o dia
           }
         } else if (nav_modo == NAV_MODO_EDICAO) {
-          if (pagina_atual == 3) {
+          if (pagina_atual == 4) {
             if (manut_confirma_reset) {
               manut_confirma_selecionado = (manut_confirma_selecionado == 0) ? 1 : 0;
             } else {
               item_manut_selecionado = (item_manut_selecionado + 1) % NUM_ITENS_MANUT;
               resetCache();
             }
-          } else if (pagina_atual == 1) {
+          } else if (pagina_atual == 2) {
             if (diag_estado == DIAG_ESTADO_MENU) {
               diag_menu_selecionado = (diag_menu_selecionado + 1) % 3;
             } else if (diag_estado == DIAG_ESTADO_CONFIRMAR) {
               diag_confirma_selecionado = (diag_confirma_selecionado == 0) ? 1 : 0;
             }
-          } else if (pagina_atual == 5) {
+          } else if (pagina_atual == 6) {
             tema_sel = (tema_sel + 1) % 7;
           }
         } else {
