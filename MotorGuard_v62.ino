@@ -359,6 +359,8 @@ static const int FUEL_TABLE_N = sizeof(FUEL_TABLE) / sizeof(FUEL_TABLE[0]);
 #define FUEL_FATOR_MIN        0.6f   // limites fisicos do fator de calibracao (erro de boia)
 #define FUEL_FATOR_MAX        1.4f
 #define FUEL_LEARN_A          0.25f  // peso do novo abastecimento no fator (media movel)
+#define FUEL_MIN_OFF_MS       90000UL // motor tem que ficar DESLIGADO >=90s p/ contar abastecimento
+                                      // (parada rapida em ladeira nao gera abastecimento-fantasma)
 volatile bool  fuel_abast_pendente = false;
 volatile bool  alerta_combustivel_discrep = false;
 volatile int   fuel_pct_antes = -1, fuel_pct_depois = -1;
@@ -370,6 +372,7 @@ char  fuel_veiculo[32] = "Veiculo";          // texto simples mostrado ao usuari
 float fuel_fator = 1.0f;                     // CALIBRACAO: litros reais / estimativa crua (so via fill confiavel)
 float fuel_l_raw = 0.0f;                     // estimativa CRUA (tanque*delta), antes do fator
 bool  fuel_calibrado = false;                // ja calibrou com um abastecimento CONFIAVEL?
+bool  fuel_gnv = false;                      // carro com GNV: a boia "sobe" sozinha (soft) -> nao auto-detecta
 static int fuel_pct_estavel = -1;
 static int fuel_pct_pre_parada = -1;
 static bool fuel_motor_estava_ligado = false;
@@ -389,6 +392,7 @@ static void fuelAnaliseSalvar() {
   fp.putFloat("fator", fuel_fator);
   fp.putFloat("raw", fuel_l_raw);
   fp.putBool("calib", fuel_calibrado);
+  fp.putBool("gnv", fuel_gnv);
   fp.end();
 }
 static void fuelAnaliseCarregar() {
@@ -405,6 +409,7 @@ static void fuelAnaliseCarregar() {
   if (fuel_fator < FUEL_FATOR_MIN || fuel_fator > FUEL_FATOR_MAX) fuel_fator = 1.0f;
   fuel_l_raw = fp.getFloat("raw", 0.0f);
   fuel_calibrado = fp.getBool("calib", false);
+  fuel_gnv = fp.getBool("gnv", false);
   fp.end();
 }
 static uint8_t fuelConfiancaPct() {
@@ -460,9 +465,11 @@ static void fuelInformarBomba(float litros) {
 static void fuelAprenderEDetectar(const DadosCarro& d) {
   int pct = d.combust;
   if (pct < 0 || pct > 100 || fuel_tanque_l < 10.0f) return;
+  if (fuel_gnv) return;   // GNV: a boia cai por software e "sobe" ao religar -> auto-deteccao daria falso
   uint32_t agora = millis();
   static int candidato = -1;
   static uint32_t religou_em = 0;
+  static uint32_t desligou_ms = 0;    // quando o motor foi desligado (p/ exigir parada longa)
   if (candidato < 0 || abs(pct - candidato) > 1) { candidato = pct; fuel_estavel_desde = agora; }
   if (agora - fuel_estavel_desde >= 5000) fuel_pct_estavel = candidato;  // 5 s estavel
   bool ligado = d.rpm > 0;
@@ -470,13 +477,17 @@ static void fuelAprenderEDetectar(const DadosCarro& d) {
   // Guarda o nivel estabilizado imediatamente antes de desligar para abastecer.
   if (fuel_motor_estava_ligado && !ligado && fuel_pct_estavel >= 0) {
     fuel_pct_pre_parada = fuel_pct_estavel;
+    desligou_ms = agora;
     religou_em = 0;
   }
   // Ao religar, NAO compara imediatamente: espera o sensor/boia estabilizar.
   if (!fuel_motor_estava_ligado && ligado && fuel_pct_pre_parada >= 0) religou_em = agora;
   if (ligado && religou_em && agora - religou_em >= 8000 && fuel_pct_estavel >= 0) {
     int delta = fuel_pct_estavel - fuel_pct_pre_parada;
-    if (delta >= FUEL_SUBIDA_MIN_PCT) {
+    // exige parada LONGA (>=90s): abastecer leva minutos; parada rapida em ladeira
+    // (gasolina escorre e a boia "sobe") nao pode virar abastecimento-fantasma.
+    bool parou_de_verdade = (desligou_ms && (religou_em - desligou_ms) >= FUEL_MIN_OFF_MS);
+    if (delta >= FUEL_SUBIDA_MIN_PCT && parou_de_verdade) {
       fuel_pct_antes = fuel_pct_pre_parada; fuel_pct_depois = fuel_pct_estavel;
       fuel_l_raw = fuel_tanque_l * ((float)delta / 100.0f);   // estimativa crua
       fuel_l_estimado = fuel_l_raw * fuel_fator;              // ja mostra corrigida pela calibracao
@@ -1193,6 +1204,16 @@ void evtSave() {   // chamada sempre com mutex_fs ja tomado (por evtRegistrar)
 }
 // registra um evento no historico (ring dos ultimos EVT_HIST_N)
 void evtRegistrar(uint8_t tipo, int16_t v, const char* cod) {
+  // ANTI-DESGASTE DA FLASH: eventos de sensor (temp/bateria/alternador/superaquec)
+  // podem repetir muito — ex.: alternador oscilando dispararia gravacoes sem parar,
+  // esgotando a vida da flash. Grava no maximo 1x a cada 10 min POR TIPO. DTC (0) e
+  // combustivel (6) sao acionados pelo usuario (raros) -> sem cooldown.
+  if (tipo >= 1 && tipo <= 4) {
+    static uint32_t last_ms[5] = {0};   // indices 1..4
+    uint32_t agora = millis(); if (agora == 0) agora = 1;
+    if (last_ms[tipo] && (agora - last_ms[tipo]) < 600000UL) return;   // ainda no cooldown
+    last_ms[tipo] = agora;
+  }
   if (mutex_fs && xSemaphoreTake(mutex_fs, pdMS_TO_TICKS(300)) != pdTRUE) return;
   Evento& e = evt_hist[evt_head];
   e.ts = agoraTS(); e.tipo = tipo; e.v = v;
@@ -5583,6 +5604,7 @@ void atualizarCombustivel(const DadosCarro& d) {
   lv_label_set_text(fuelLblDif,b);
   uint8_t conf=fuelConfiancaPct();
   if (fuel_metodo==3 || d.combust<0) snprintf(b,sizeof(b),"Analise indisponivel neste veiculo");
+  else if (fuel_gnv) snprintf(b,sizeof(b),"Carro com GNV: auto-deteccao desligada");
   else if (fuel_tanque_l<10) snprintf(b,sizeof(b),"Cadastre o veiculo no app");
   else if (!fuel_calibrado) snprintf(b,sizeof(b),"Ativa: alerta 5%%/1L  |  calibre num posto de confianca");
   else snprintf(b,sizeof(b),"Calibrada: alerta ~500ml  |  confianca %u%%",conf);
@@ -5943,7 +5965,7 @@ String executarComandoApp(String cmd) {
     if (tank < 20 || tank > 200 || nome.length()<2) return "ERRO: dados do veiculo invalidos";
     fuel_tanque_l=tank; strncpy(fuel_veiculo,nome.c_str(),sizeof(fuel_veiculo)-1); fuel_veiculo[sizeof(fuel_veiculo)-1]=0;
     fuel_aprendizado=0; fuel_abast_pendente=false; alerta_combustivel_discrep=false;
-    fuel_fator=1.0f; fuel_l_raw=0.0f; fuel_calibrado=false;   // zera a calibracao (carro/tanque novo)
+    fuel_fator=1.0f; fuel_l_raw=0.0f; fuel_calibrado=false; fuel_gnv=false;   // zera calibracao/GNV (carro novo)
     fuelAnaliseSalvar();
     return "OK: veiculo="+nome+" tanque="+String(tank,1)+"L";
   }
@@ -5966,10 +5988,21 @@ String executarComandoApp(String cmd) {
     fuelCalibrar(l);
     return "OK: calibrado com "+String(l,1)+"L (fator="+String(fuel_fator,3)+"). Agora alerta a partir de ~500ml.";
   }
+  // Carro com GNV: a boia de gasolina cai por software (estimativa do painel) e
+  // "sobe" ao religar -> a auto-deteccao daria abastecimento-fantasma. FUEL GNV 1
+  // desliga a auto-deteccao nesse carro. Ex.: FUEL GNV 1  (ou 0 p/ so gasolina)
+  if (up.startsWith("FUEL GNV ")) {
+    int g = cmd.substring(9).toInt();
+    fuel_gnv = (g != 0);
+    fuel_abast_pendente = false; alerta_combustivel_discrep = false;
+    fuelAnaliseSalvar();
+    return fuel_gnv ? "OK: GNV ligado (auto-deteccao de abastecimento desativada)"
+                    : "OK: GNV desligado (auto-deteccao ativa)";
+  }
   if (up == "FUEL STATUS") {
     return "car="+String(fuel_veiculo)+" tank="+String(fuel_tanque_l,1)+" nivel="+String((int)dados_publicos.combust)+
            "% est="+String(fuel_l_estimado,1)+" inf="+String(fuel_l_informado,1)+" dif="+String(fuel_dif_pct,1)+
-           "% fator="+String(fuel_fator,3)+(fuel_calibrado?" calibrado":" nao-calib")+" conf="+String(fuelConfiancaPct())+"%";
+           "% fator="+String(fuel_fator,3)+(fuel_calibrado?" calibrado":" nao-calib")+(fuel_gnv?" GNV":"")+" conf="+String(fuelConfiancaPct())+"%";
   }
 
   // ===== Diagnostico (DTCs) via BLE: dispara a leitura na taskCAN e espera o resultado =====
