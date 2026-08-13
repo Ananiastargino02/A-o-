@@ -6600,6 +6600,14 @@ void taskBotoes(void* param) {
     }
 
     if (prev_menu == HIGH && agora_menu == LOW) { menu_pressionado_em = t; menu_longpress_disparado = false; Serial.println("[BTN] MENU pressionado"); }
+    // U4: carrossel abre com um segurar CURTO (~1s) no painel — os 4s eram longos demais,
+    //     por isso parecia que o carrossel "nao existia". Resets perigosos continuam em 4s.
+    if (agora_menu == LOW && !menu_longpress_disparado && pagina_atual == 0
+        && nav_modo == NAV_MODO_VISUALIZACAO && t - menu_pressionado_em >= 1000) {
+      menu_longpress_disparado = true;
+      menu_carrossel = true; menu_sel = pagina_atual; menu_car_input = t;
+      Serial.println("[BTN] carrossel ABERTO (MENU segurado ~1s)");
+    }
     if (agora_menu == LOW && !menu_longpress_disparado && t - menu_pressionado_em >= LONGPRESS_MS) {
       menu_longpress_disparado = true;
       if (pagina_atual == 0 && nav_modo == NAV_MODO_VISUALIZACAO) {
