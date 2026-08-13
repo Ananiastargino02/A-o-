@@ -5708,8 +5708,11 @@ void atualizarCombustivel(const DadosCarro& d) {
 //  ANT/PRX movem, OK entra, fecha sozinho apos ~6s sem toque.
 // ============================================================
 static lv_obj_t *gMenuCar = NULL, *menuCarSelBar = NULL;
-static const char* MENU_NOMES[8] = {"Painel", "Combustivel", "Falhas", "Sistema",
-                                    "Manutencao", "Hora / Data", "Temas", "Historico"};
+// A pagina de HORA (5) saiu da navegacao — a hora agora vem do app (BLE SETTIME).
+// O carrossel lista so as paginas navegaveis; MENU_PAGS mapeia o item -> pagina real.
+static const char* MENU_NOMES[] = {"Painel", "Combustivel", "Falhas", "Sistema", "Manutencao", "Temas", "Historico"};
+static const uint8_t MENU_PAGS[] = {0, 1, 2, 3, 4, 6, 7};   // pula a 5 (Hora/Data)
+#define MENU_N 7
 void montarMenuCarrossel() {
   lv_obj_t* scr = lv_scr_act();
   gMenuCar = lv_obj_create(scr);
@@ -5733,7 +5736,7 @@ void montarMenuCarrossel() {
   lv_obj_set_style_radius(menuCarSelBar, 5, 0);
   lv_obj_clear_flag(menuCarSelBar, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_pos(menuCarSelBar, 10, 40 + menu_sel * 22);
-  for (int i = 0; i < TOTAL_PAGINAS; i++) {
+  for (int i = 0; i < MENU_N; i++) {
     lv_obj_t* l = lv_label_create(gMenuCar);
     lv_label_set_text(l, MENU_NOMES[i]);
     lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
@@ -6582,11 +6585,11 @@ void taskBotoes(void* param) {
     if (menu_carrossel) {
       bool tocou = false;
       if (t - ultimo_debounce > DEBOUNCE_MS) {
-        if (prev_ant == HIGH && agora_ant == LOW) { menu_sel = (menu_sel == 0) ? (TOTAL_PAGINAS - 1) : (menu_sel - 1); ultimo_debounce = t; tocou = true; }
-        else if (prev_prx == HIGH && agora_prx == LOW) { menu_sel = (menu_sel + 1) % TOTAL_PAGINAS; ultimo_debounce = t; tocou = true; }
+        if (prev_ant == HIGH && agora_ant == LOW) { menu_sel = (menu_sel == 0) ? (MENU_N - 1) : (menu_sel - 1); ultimo_debounce = t; tocou = true; }
+        else if (prev_prx == HIGH && agora_prx == LOW) { menu_sel = (menu_sel + 1) % MENU_N; ultimo_debounce = t; tocou = true; }
       }
       if (prev_enter == LOW && agora_enter == HIGH && t - ultimo_enter > DEBOUNCE_MS) {
-        pagina_atual = menu_sel; nav_modo = NAV_MODO_VISUALIZACAO; menu_carrossel = false; ultimo_enter = t; tocou = true;
+        pagina_atual = MENU_PAGS[menu_sel]; nav_modo = NAV_MODO_VISUALIZACAO; menu_carrossel = false; ultimo_enter = t; tocou = true;
       }
       if (tocou) menu_car_input = t;
       else if (t - menu_car_input > 6000) menu_carrossel = false;   // fecha sozinho
@@ -6672,6 +6675,7 @@ void taskBotoes(void* param) {
         } else {
           if (pagina_atual == 0) pagina_atual = TOTAL_PAGINAS - 1;
           else pagina_atual--;
+          if (pagina_atual == 5) pagina_atual--;   // pula a pagina de Hora/Data (agora vem do app)
         }
         ultimo_debounce = t;
       }
@@ -6708,6 +6712,7 @@ void taskBotoes(void* param) {
           }
         } else {
           pagina_atual = (pagina_atual + 1) % TOTAL_PAGINAS;
+          if (pagina_atual == 5) pagina_atual = (pagina_atual + 1) % TOTAL_PAGINAS;   // pula Hora/Data
         }
         ultimo_debounce = t;
       }
