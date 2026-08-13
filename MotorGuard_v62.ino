@@ -373,6 +373,8 @@ float fuel_fator = 1.0f;                     // CALIBRACAO: litros reais / estim
 float fuel_l_raw = 0.0f;                     // estimativa CRUA (tanque*delta), antes do fator
 bool  fuel_calibrado = false;                // ja calibrou com um abastecimento CONFIAVEL?
 bool  fuel_gnv = false;                      // carro com GNV: a boia "sobe" sozinha (soft) -> nao auto-detecta
+volatile bool fuel_aguardando_mov = false;   // pos-abastecimento: espera o carro andar ~500m p/ a boia assentar
+uint32_t fuel_km_ini_x100 = 0;               // km no momento do abastecimento (p/ medir os 500m)
 static int fuel_pct_estavel = -1;
 static int fuel_pct_pre_parada = -1;
 static bool fuel_motor_estava_ligado = false;
@@ -493,10 +495,37 @@ static void fuelAprenderEDetectar(const DadosCarro& d) {
       fuel_l_estimado = fuel_l_raw * fuel_fator;              // ja mostra corrigida pela calibracao
       fuel_l_informado = 0; fuel_dif_l = 0; fuel_dif_pct = 0;
       fuel_abast_pendente = true; alerta_combustivel_discrep = false;
+      // v7.1: estimativa acima e PROVISORIA; espera o carro andar ~500m p/ a boia
+      // assentar (combustivel balança parado) e ai refina.
+      fuel_aguardando_mov = true;
+      if (xSemaphoreTake(mutex_hodometro, pdMS_TO_TICKS(20)) == pdTRUE) {
+        fuel_km_ini_x100 = km_total_x100 + km_acumulado_x100;
+        xSemaphoreGive(mutex_hodometro);
+      }
       fuelAnaliseSalvar();
-      Serial.printf("[Fuel] abastecimento detectado: %d%% -> %d%%, estimado %.2f L\n", fuel_pct_antes, fuel_pct_depois, fuel_l_estimado);
+      Serial.printf("[Fuel] abastecimento detectado: %d%% -> %d%%, estimado %.2f L (refina em 500m)\n", fuel_pct_antes, fuel_pct_depois, fuel_l_estimado);
     }
     fuel_pct_pre_parada = -1; religou_em = 0;
+  }
+
+  // v7.1: depois de ~500m rodados, re-le o nivel JA ASSENTADO e ajusta a estimativa.
+  if (fuel_aguardando_mov && fuel_pct_estavel >= 0) {
+    uint32_t kmx = 0;
+    if (xSemaphoreTake(mutex_hodometro, pdMS_TO_TICKS(20)) == pdTRUE) {
+      kmx = km_total_x100 + km_acumulado_x100;
+      xSemaphoreGive(mutex_hodometro);
+    }
+    if (kmx >= fuel_km_ini_x100 && (kmx - fuel_km_ini_x100) >= 50) {   // ~500m
+      int depois = fuel_pct_estavel;
+      if (depois > fuel_pct_antes) {
+        fuel_pct_depois = depois;
+        fuel_l_raw = fuel_tanque_l * ((float)(depois - fuel_pct_antes) / 100.0f);
+        fuel_l_estimado = fuel_l_raw * fuel_fator;
+        fuelAnaliseSalvar();
+        Serial.printf("[Fuel] boia assentada apos 500m: %d%% -> refino %.2f L\n", depois, fuel_l_estimado);
+      }
+      fuel_aguardando_mov = false;
+    }
   }
   fuel_motor_estava_ligado = ligado;
 }
@@ -4151,7 +4180,7 @@ void montarCockpit4() {
 // Conta-giro central grande (azul->vermelho), COOLANT+termometro a ESQUERDA,
 // VOLTAGE + SPEED a DIREITA, e barra de MANUTENCAO embaixo. 320x240.
 void montarCockpit5() {
-  lv_obj_t* scr = baseCockpit(0x04060C);
+  lv_obj_t* scr = baseCockpit(0x000000);   // preto puro: fica mais escuro/imerso no painel (ST7789 e LCD, nao AMOLED)
 
   // ---------- conta-giro central com BANDA EM DEGRADE (azul fraco->forte, vermelho no fim) ----------
   meter = lv_meter_create(gCockpit);
@@ -5952,6 +5981,15 @@ String executarComandoApp(String cmd) {
     }
     salvarHodometro();
     return "OK: odometro = " + String(km) + " km";
+  }
+  // Auto-sincroniza a HORA pelo celular (o app manda ao conectar). Acaba com a
+  // chatice de ajustar dia/mes/ano no botao. Ex.: SETTIME 1765238400
+  if (up.startsWith("SETTIME ")) {
+    uint32_t ut = (uint32_t) cmd.substring(8).toInt();
+    if (ut < 1672531200UL || ut > 4102444800UL) return "ERRO: horario invalido";  // 2023..2100
+    rtcAdjust(DateTime(ut));
+    hora_nao_ajustada = false;
+    return "OK: hora sincronizada";
   }
   if (up == "SPEEDHIST") return speedHistString();   // historico de velocidade (gravado no aparelho)
 
