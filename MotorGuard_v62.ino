@@ -371,11 +371,8 @@ volatile int   fuel_pct_antes = -1, fuel_pct_depois = -1;
 volatile float fuel_l_estimado = 0.0f, fuel_l_informado = 0.0f;
 volatile float fuel_dif_l = 0.0f, fuel_dif_pct = 0.0f;
 volatile uint8_t fuel_aprendizado = 0;       // 0..5 abastecimentos validos
-float fuel_tanque_l = 0.0f;                  // capacidade cadastrada (nominal)
-float fuel_reserva_l = 0.0f;                 // reserva de seguranca abaixo do 0% da boia (ex.: 1,2 L)
+float fuel_tanque_l = 0.0f;                  // capacidade cadastrada
 char  fuel_veiculo[32] = "Veiculo";          // texto simples mostrado ao usuario
-// capacidade UTIL = o que a boia mede de 0% a 100% (tanque - reserva)
-static inline float fuelCapUtil() { float c = fuel_tanque_l - fuel_reserva_l; return (c >= 5.0f) ? c : fuel_tanque_l; }
 float fuel_fator = 1.0f;                     // CALIBRACAO: litros reais / estimativa crua (so via fill confiavel)
 float fuel_l_raw = 0.0f;                     // estimativa CRUA (tanque*delta), antes do fator
 bool  fuel_calibrado = false;                // ja calibrou com um abastecimento CONFIAVEL?
@@ -406,7 +403,6 @@ static void fuelAnaliseSalvar() {
   fp.putInt("prep", fuel_pct_pre_parada);   // nivel ANTES de desligar (sobrevive a queda de energia)
   fp.putInt("pa", fuel_pct_antes);          // ULTIMO abastecimento: nivel antes/depois (%)
   fp.putInt("pd", fuel_pct_depois);
-  fp.putFloat("resv", fuel_reserva_l);      // reserva de seguranca (L)
   fp.end();
 }
 static void fuelAnaliseCarregar() {
@@ -428,8 +424,6 @@ static void fuelAnaliseCarregar() {
   if (fuel_pct_pre_parada >= 0) fuel_pre_de_boot = true;   // veio da NVS -> aparelho desligou no posto
   fuel_pct_antes = fp.getInt("pa", -1);          // ultimo abastecimento (persistido)
   fuel_pct_depois = fp.getInt("pd", -1);
-  fuel_reserva_l = fp.getFloat("resv", 0.0f);
-  if (fuel_reserva_l < 0 || fuel_reserva_l > 10) fuel_reserva_l = 0;
   fp.end();
 }
 static uint8_t fuelConfiancaPct() {
@@ -513,7 +507,7 @@ static void fuelAprenderEDetectar(const DadosCarro& d) {
     bool parou_de_verdade = fuel_pre_de_boot || (desligou_ms && (religou_em - desligou_ms) >= FUEL_MIN_OFF_MS);
     if (delta >= FUEL_SUBIDA_MIN_PCT && parou_de_verdade) {
       fuel_pct_antes = fuel_pct_pre_parada; fuel_pct_depois = fuel_pct_estavel;
-      fuel_l_raw = fuelCapUtil() * ((float)delta / 100.0f);   // estimativa crua (capacidade UTIL)
+      fuel_l_raw = fuel_tanque_l * ((float)delta / 100.0f);   // estimativa crua
       fuel_l_estimado = fuel_l_raw * fuel_fator;              // ja mostra corrigida pela calibracao
       fuel_l_informado = 0; fuel_dif_l = 0; fuel_dif_pct = 0;
       fuel_abast_pendente = true; alerta_combustivel_discrep = false;
@@ -542,7 +536,7 @@ static void fuelAprenderEDetectar(const DadosCarro& d) {
       int depois = fuel_pct_estavel;
       if (depois > fuel_pct_antes) {
         fuel_pct_depois = depois;
-        fuel_l_raw = fuelCapUtil() * ((float)(depois - fuel_pct_antes) / 100.0f);
+        fuel_l_raw = fuel_tanque_l * ((float)(depois - fuel_pct_antes) / 100.0f);
         fuel_l_estimado = fuel_l_raw * fuel_fator;
         fuelAnaliseSalvar();
         Serial.printf("[Fuel] boia assentada apos 500m: %d%% -> refino %.2f L\n", depois, fuel_l_estimado);
@@ -5682,7 +5676,7 @@ void atualizarCombustivel(const DadosCarro& d) {
   char b[96];
   if (fuel_tanque_l >= 10) snprintf(b,sizeof(b),"%s  |  %.0f L", fuel_veiculo, fuel_tanque_l); else snprintf(b,sizeof(b),"%s", fuel_veiculo);
   lv_label_set_text(fuelLblCar,b);
-  if (d.combust >= 0 && fuel_tanque_l >= 10) snprintf(b,sizeof(b),"Nivel %d%%   ~%.1f L", d.combust, fuel_reserva_l + fuelCapUtil()*d.combust/100.0f);
+  if (d.combust >= 0 && fuel_tanque_l >= 10) snprintf(b,sizeof(b),"Nivel %d%%   ~%.1f L", d.combust, fuel_tanque_l*d.combust/100.0f);
   else if (d.combust >= 0) snprintf(b,sizeof(b),"Nivel %d%%", d.combust); else snprintf(b,sizeof(b),"Nivel --");
   lv_label_set_text(fuelLblNivel,b);
   // ULTIMO ABASTECIMENTO (fica gravado): de X% -> Y% e quantos litros entraram.
@@ -6135,7 +6129,7 @@ String executarComandoApp(String cmd) {
     fuel_tanque_l=tank; strncpy(fuel_veiculo,nome.c_str(),sizeof(fuel_veiculo)-1); fuel_veiculo[sizeof(fuel_veiculo)-1]=0;
     fuel_aprendizado=0; fuel_abast_pendente=false; alerta_combustivel_discrep=false;
     fuel_fator=1.0f; fuel_l_raw=0.0f; fuel_calibrado=false; fuel_gnv=false;   // zera calibracao/GNV (carro novo)
-    fuel_pct_antes=-1; fuel_pct_depois=-1; fuel_l_estimado=0; fuel_l_informado=0; fuel_reserva_l=0;   // zera ultimo abast. e reserva
+    fuel_pct_antes=-1; fuel_pct_depois=-1; fuel_l_estimado=0; fuel_l_informado=0;   // zera ultimo abastecimento
     fuelAnaliseSalvar();
     return "OK: veiculo="+nome+" tanque="+String(tank,1)+"L";
   }
@@ -6169,15 +6163,8 @@ String executarComandoApp(String cmd) {
     return fuel_gnv ? "OK: GNV ligado (auto-deteccao de abastecimento desativada)"
                     : "OK: GNV desligado (auto-deteccao ativa)";
   }
-  // Reserva de seguranca (litros abaixo do 0% da boia). Ex.: FUEL RESERVA 1.2
-  if (up.startsWith("FUEL RESERVA ")) {
-    float r = cmd.substring(13).toFloat();
-    if (r < 0 || r > 10) return "ERRO: reserva 0..10 L";
-    fuel_reserva_l = r; fuelAnaliseSalvar();
-    return "OK: reserva=" + String(r,1) + "L (capacidade util=" + String(fuelCapUtil(),1) + "L)";
-  }
   if (up == "FUEL STATUS") {
-    return "car="+String(fuel_veiculo)+" tank="+String(fuel_tanque_l,1)+" resv="+String(fuel_reserva_l,1)+" nivel="+String((int)dados_publicos.combust)+
+    return "car="+String(fuel_veiculo)+" tank="+String(fuel_tanque_l,1)+" nivel="+String((int)dados_publicos.combust)+
            "% est="+String(fuel_l_estimado,1)+" inf="+String(fuel_l_informado,1)+" dif="+String(fuel_dif_pct,1)+
            "% fator="+String(fuel_fator,3)+(fuel_calibrado?" calibrado":" nao-calib")+(fuel_gnv?" GNV":"")+" conf="+String(fuelConfiancaPct())+"%";
   }
