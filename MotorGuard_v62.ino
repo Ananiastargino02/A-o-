@@ -3754,25 +3754,33 @@ void autoteste() {
 
 // ---------- Monta o cockpit (estilo HUD) ----------
 // Popup de alerta (compartilhado por todos os estilos de painel)
+// U3: callback de deslize (anima o Y do banner)
+static void popupSlideCb(void* obj, int32_t y) { lv_obj_set_y((lv_obj_t*)obj, y); }
+#define POPUP_Y_ABERTO   8
+#define POPUP_Y_FECHADO  (-80)
+
 static void criarPopup(lv_obj_t* scr) {
+  // U3: BANNER no TOPO (nao tapa a velocidade no centro), semitransparente, desliza.
   popup = lv_obj_create(scr);
-  lv_obj_set_size(popup, 292, 92);
-  lv_obj_center(popup);
+  lv_obj_set_size(popup, 300, 60);
+  lv_obj_set_pos(popup, 10, POPUP_Y_ABERTO);
   lv_obj_set_style_bg_color(popup, lv_color_hex(0x1A0707), 0);
+  lv_obj_set_style_bg_opa(popup, LV_OPA_90, 0);   // semitransparente (estilo notificacao)
   lv_obj_set_style_border_color(popup, lv_color_hex(0xFF1744), 0);
-  lv_obj_set_style_border_width(popup, 3, 0);
-  lv_obj_set_style_radius(popup, 10, 0);
+  lv_obj_set_style_border_width(popup, 2, 0);
+  lv_obj_set_style_radius(popup, 14, 0);
+  lv_obj_set_style_pad_all(popup, 0, 0);
   lv_obj_clear_flag(popup, LV_OBJ_FLAG_SCROLLABLE);
   popupIcon = lv_label_create(popup);
   lv_label_set_text(popupIcon, LV_SYMBOL_WARNING);
-  lv_obj_set_style_text_font(popupIcon, &lv_font_montserrat_40, 0);
+  lv_obj_set_style_text_font(popupIcon, &lv_font_montserrat_28, 0);
   lv_obj_set_style_text_color(popupIcon, lv_color_hex(0xFF1744), 0);
-  lv_obj_align(popupIcon, LV_ALIGN_LEFT_MID, 4, 0);
+  lv_obj_align(popupIcon, LV_ALIGN_LEFT_MID, 16, 0);
   popupMsg = lv_label_create(popup);
   lv_label_set_text(popupMsg, "ALERTA");
   lv_obj_set_style_text_font(popupMsg, &lv_font_montserrat_28, 0);
   lv_obj_set_style_text_color(popupMsg, lv_color_hex(0xFF5252), 0);
-  lv_obj_align(popupMsg, LV_ALIGN_RIGHT_MID, -6, 0);
+  lv_obj_align(popupMsg, LV_ALIGN_CENTER, 18, 0);
   lv_obj_add_flag(popup, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -4744,7 +4752,14 @@ void atualizarCockpit(DadosCarro &d) {
   } else if (alertCnt == 0 || !janela) {
     if (popup_shown) { lv_obj_add_flag(popup, LV_OBJ_FLAG_HIDDEN); popup_shown = false; }
   } else {
-    if (!popup_shown) { lv_obj_clear_flag(popup, LV_OBJ_FLAG_HIDDEN); popup_shown = true; blink_changed = true; last_alertIdx = -1; }
+    if (!popup_shown) {
+      lv_obj_clear_flag(popup, LV_OBJ_FLAG_HIDDEN); popup_shown = true; blink_changed = true; last_alertIdx = -1;
+      // U3: desliza suave de cima pra baixo (estilo notificacao)
+      lv_anim_t a; lv_anim_init(&a); lv_anim_set_var(&a, popup);
+      lv_anim_set_values(&a, POPUP_Y_FECHADO, POPUP_Y_ABERTO); lv_anim_set_time(&a, 260);
+      lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+      lv_anim_set_exec_cb(&a, popupSlideCb); lv_anim_start(&a);
+    }
     if (tempCritica) {
       if (last_alertIdx != -2) { lv_label_set_text(popupMsg, "TEMP ALTA"); last_alertIdx = -2; }
     } else {
