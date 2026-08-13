@@ -3728,6 +3728,7 @@ static lv_obj_t *gManut, *manutLista, *manutSel, *manutNome[NUM_ITENS_MANUT], *m
 static lv_obj_t *manutBar[NUM_ITENS_MANUT], *manutIcon[NUM_ITENS_MANUT];
 static lv_obj_t *manutConfirm, *manutConfirmNome, *manutConfirmSim, *manutConfirmNao;
 static lv_obj_t *gDiag, *diagTit, *diagSel, *diagM[3], *diagMsg, *diagLista, *diagSim, *diagNao;
+static lv_obj_t *diagBadge = NULL, *diagBadgeTxt = NULL;   // U1: selo de gravidade colorido
 static lv_obj_t *gAjuste, *ajTit, *ajCampo[6], *ajSalvar;
 static lv_obj_t *gSistema, *sisTit, *sisDist, *sisTempo;
 static lv_obj_t *sisConfirm, *sisConfirmSim, *sisConfirmNao;
@@ -5001,13 +5002,26 @@ void montarDiag() {
   lv_obj_align(diagMsg, LV_ALIGN_CENTER, 0, 0);
   lv_obj_add_flag(diagMsg, LV_OBJ_FLAG_HIDDEN);
 
+  // U1: SELO de gravidade (pare / oficina / pode rodar) — grande e colorido
+  diagBadge = lv_obj_create(gDiag);
+  lv_obj_set_size(diagBadge, 296, 44);
+  lv_obj_set_pos(diagBadge, 12, 64);
+  lv_obj_set_style_radius(diagBadge, 10, 0);
+  lv_obj_set_style_border_width(diagBadge, 0, 0);
+  lv_obj_set_style_pad_all(diagBadge, 0, 0);
+  lv_obj_clear_flag(diagBadge, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(diagBadge, LV_OBJ_FLAG_HIDDEN);
+  diagBadgeTxt = lv_label_create(diagBadge);
+  lv_obj_set_style_text_font(diagBadgeTxt, &lv_font_montserrat_14, 0);
+  lv_obj_center(diagBadgeTxt);
+
   diagLista = lv_label_create(gDiag);
   lv_label_set_text(diagLista, "");
   lv_obj_set_style_text_font(diagLista, &lv_font_montserrat_14, 0);
   lv_obj_set_style_text_color(diagLista, lv_color_hex(0xFFC107), 0);
   lv_label_set_long_mode(diagLista, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(diagLista, 296);
-  lv_obj_set_pos(diagLista, 12, 72);
+  lv_obj_set_pos(diagLista, 12, 118);
   lv_obj_add_flag(diagLista, LV_OBJ_FLAG_HIDDEN);
 
   diagSim = lv_label_create(gDiag);
@@ -5045,6 +5059,7 @@ void atualizarDiag() {
     diagShow(diagSim, isConf);
     diagShow(diagNao, isConf);
     diagShow(diagLista, isResu && diag_num_dtcs > 0);
+    diagShow(diagBadge, isResu && diag_num_dtcs > 0);
     diagShow(diagMsg, !isMenu);
 
     if (est == DIAG_ESTADO_LENDO) {
@@ -5087,6 +5102,18 @@ void atualizarDiag() {
             uint8_t ga = da ? da->gravidade : 0, gb = db ? db->gravidade : 0;
             if (gb > ga) { int t = ordem[a]; ordem[a] = ordem[b]; ordem[b] = t; }
           }
+        // U1: SELO com a PIOR gravidade (ordem[0] = mais grave apos ordenar)
+        const DtcInfo* pior = nord ? infoDTC(diag_dtcs[ordem[0]]) : NULL;
+        uint8_t gmax = pior ? pior->gravidade : 1;
+        uint32_t bg, tc; const char* stxt;
+        if (gmax >= 3)      { bg = 0x3A0B0B; tc = 0xFF5252; stxt = LV_SYMBOL_WARNING "  PARE O CARRO"; }
+        else if (gmax == 2) { bg = 0x33290A; tc = 0xFFC107; stxt = "OFICINA ESTA SEMANA"; }
+        else                { bg = 0x0E3320; tc = 0x69F0AE; stxt = LV_SYMBOL_OK "  PODE RODAR"; }
+        lv_obj_set_style_bg_color(diagBadge, lv_color_hex(bg), 0);
+        lv_obj_set_style_border_width(diagBadge, 2, 0);
+        lv_obj_set_style_border_color(diagBadge, lv_color_hex(tc), 0);
+        lv_obj_set_style_text_color(diagBadgeTxt, lv_color_hex(tc), 0);
+        lv_label_set_text(diagBadgeTxt, stxt);
         for (int k = 0; k < nord; k++) {
           int i = ordem[k];
           const DtcInfo* d = infoDTC(diag_dtcs[i]);
