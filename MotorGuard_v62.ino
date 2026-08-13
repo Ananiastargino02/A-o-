@@ -144,7 +144,7 @@ void evtRegistrar(uint8_t tipo, int16_t v, const char* cod);
 #define WAKE_INTERVAL_S    60
 // ===== STANDBY =====
 #define TENSAO_WAKE          13.0   // V: acima disso = alternador carregando (motor ligado)
-#define TEMPO_STANDBY_MS     120000UL // carro desligado por 2min -> entra em standby (nao dorme em parada rapida/start-stop)
+#define TEMPO_STANDBY_MS     60000UL // carro desligado por 60s -> entra em standby
 #define CONFIRMA_CAN_MS      3000   // ao acordar, espera atividade CAN por ate 3s
 
 // ============================================================
