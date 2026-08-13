@@ -379,6 +379,7 @@ bool  fuel_calibrado = false;                // ja calibrou com um abastecimento
 bool  fuel_gnv = false;                      // carro com GNV: a boia "sobe" sozinha (soft) -> nao auto-detecta
 volatile bool fuel_aguardando_mov = false;   // pos-abastecimento: espera o carro andar ~500m p/ a boia assentar
 uint32_t fuel_km_ini_x100 = 0;               // km no momento do abastecimento (p/ medir os 500m)
+volatile bool fuel_pre_de_boot = false;      // o nivel-antes veio GRAVADO (aparelho desligou no posto)
 static int fuel_pct_estavel = -1;
 static int fuel_pct_pre_parada = -1;
 static bool fuel_motor_estava_ligado = false;
@@ -399,6 +400,7 @@ static void fuelAnaliseSalvar() {
   fp.putFloat("raw", fuel_l_raw);
   fp.putBool("calib", fuel_calibrado);
   fp.putBool("gnv", fuel_gnv);
+  fp.putInt("prep", fuel_pct_pre_parada);   // nivel ANTES de desligar (sobrevive a queda de energia)
   fp.end();
 }
 static void fuelAnaliseCarregar() {
@@ -416,6 +418,8 @@ static void fuelAnaliseCarregar() {
   fuel_l_raw = fp.getFloat("raw", 0.0f);
   fuel_calibrado = fp.getBool("calib", false);
   fuel_gnv = fp.getBool("gnv", false);
+  fuel_pct_pre_parada = fp.getInt("prep", -1);   // nivel ANTES de desligar (gravado)
+  if (fuel_pct_pre_parada >= 0) fuel_pre_de_boot = true;   // veio da NVS -> aparelho desligou no posto
   fp.end();
 }
 static uint8_t fuelConfiancaPct() {
@@ -481,10 +485,12 @@ static void fuelAprenderEDetectar(const DadosCarro& d) {
   bool ligado = d.rpm > 0;
 
   // Guarda o nivel estabilizado imediatamente antes de desligar para abastecer.
+  // GRAVA na NVS: se o aparelho perder energia no posto, o nivel-antes sobrevive.
   if (fuel_motor_estava_ligado && !ligado && fuel_pct_estavel >= 0) {
     fuel_pct_pre_parada = fuel_pct_estavel;
     desligou_ms = agora;
     religou_em = 0;
+    fuelAnaliseSalvar();   // persiste o "antes"
   }
   // Ao religar, NAO compara imediatamente: espera o sensor/boia estabilizar.
   if (!fuel_motor_estava_ligado && ligado && fuel_pct_pre_parada >= 0) religou_em = agora;
@@ -492,7 +498,9 @@ static void fuelAprenderEDetectar(const DadosCarro& d) {
     int delta = fuel_pct_estavel - fuel_pct_pre_parada;
     // exige parada LONGA (>=90s): abastecer leva minutos; parada rapida em ladeira
     // (gasolina escorre e a boia "sobe") nao pode virar abastecimento-fantasma.
-    bool parou_de_verdade = (desligou_ms && (religou_em - desligou_ms) >= FUEL_MIN_OFF_MS);
+    // Se o nivel-antes veio GRAVADO (aparelho desligou no posto), ja conta como
+    // parada de verdade (nao da p/ power-cycle rapido a ponto de ser ladeira).
+    bool parou_de_verdade = fuel_pre_de_boot || (desligou_ms && (religou_em - desligou_ms) >= FUEL_MIN_OFF_MS);
     if (delta >= FUEL_SUBIDA_MIN_PCT && parou_de_verdade) {
       fuel_pct_antes = fuel_pct_pre_parada; fuel_pct_depois = fuel_pct_estavel;
       fuel_l_raw = fuel_tanque_l * ((float)delta / 100.0f);   // estimativa crua
@@ -506,10 +514,11 @@ static void fuelAprenderEDetectar(const DadosCarro& d) {
         fuel_km_ini_x100 = km_total_x100 + km_acumulado_x100;
         xSemaphoreGive(mutex_hodometro);
       }
-      fuelAnaliseSalvar();
       Serial.printf("[Fuel] abastecimento detectado: %d%% -> %d%%, estimado %.2f L (refina em 500m)\n", fuel_pct_antes, fuel_pct_depois, fuel_l_estimado);
     }
-    fuel_pct_pre_parada = -1; religou_em = 0;
+    // consumiu o "antes": limpa (RAM + NVS) p/ nao re-detectar no proximo boot
+    fuel_pct_pre_parada = -1; religou_em = 0; fuel_pre_de_boot = false;
+    fuelAnaliseSalvar();
   }
 
   // v7.1: depois de ~500m rodados, re-le o nivel JA ASSENTADO e ajusta a estimativa.
