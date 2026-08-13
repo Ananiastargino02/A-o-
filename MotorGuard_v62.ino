@@ -144,7 +144,7 @@ void evtRegistrar(uint8_t tipo, int16_t v, const char* cod);
 #define WAKE_INTERVAL_S    60
 // ===== STANDBY =====
 #define TENSAO_WAKE          13.0   // V: acima disso = alternador carregando (motor ligado)
-#define TEMPO_STANDBY_MS     40000UL // tensao baixa por 40s -> entra em standby
+#define TEMPO_STANDBY_MS     120000UL // carro desligado por 2min -> entra em standby (nao dorme em parada rapida/start-stop)
 #define CONFIRMA_CAN_MS      3000   // ao acordar, espera atividade CAN por ate 3s
 
 // ============================================================
@@ -3429,19 +3429,17 @@ void taskCAN(void* param) {
         }
       }
     }
-    // ===== Entrada em standby: tensao baixa E motor parado (rpm 0), sustentado por 40s =====
-    // DESLIGADO TEMPORARIAMENTE p/ testes (a leitura VBAT da Rev3 esta lendo ~4V e mandava
-    // o aparelho dormir achando "carro desligado"). Reativar quando o VBAT estiver calibrado.
-#if 0
-    if (ultimo.tensao > 0 && ultimo.tensao < TENSAO_WAKE && ultimo.rpm <= 0) {
+    // ===== Entrada em standby: carro DESLIGADO, sustentado. Evita sugar a bateria parado. =====
+    // SEGURANCA: so dorme se a tensao for PLAUSIVEL e baixa (6..13V). Se a leitura VBAT
+    // estiver quebrada (ex.: 4V), NAO dorme -> nunca dorme errado (no pior caso so nao
+    // economiza, como estava). Tambem exige motor parado (rpm<=0) E carro parado (vel<=0).
+    if (ultimo.tensao > 6.0f && ultimo.tensao < TENSAO_WAKE &&
+        ultimo.rpm <= 0 && ultimo.velocidade <= 0) {
       if (!contando_pra_sleep) { contando_pra_sleep = true; inicio_rpm_baixo = millis(); }
       else if (millis() - inicio_rpm_baixo >= TEMPO_STANDBY_MS) { entrarEmStandby(); continue; }
     } else {
       contando_pra_sleep = false;
     }
-#else
-    contando_pra_sleep = false;
-#endif
     ciclo++;
     ultimo_heartbeat = millis();
     vTaskDelay(pdMS_TO_TICKS(400));
