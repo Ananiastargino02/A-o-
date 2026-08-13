@@ -401,6 +401,8 @@ static void fuelAnaliseSalvar() {
   fp.putBool("calib", fuel_calibrado);
   fp.putBool("gnv", fuel_gnv);
   fp.putInt("prep", fuel_pct_pre_parada);   // nivel ANTES de desligar (sobrevive a queda de energia)
+  fp.putInt("pa", fuel_pct_antes);          // ULTIMO abastecimento: nivel antes/depois (%)
+  fp.putInt("pd", fuel_pct_depois);
   fp.end();
 }
 static void fuelAnaliseCarregar() {
@@ -420,6 +422,8 @@ static void fuelAnaliseCarregar() {
   fuel_gnv = fp.getBool("gnv", false);
   fuel_pct_pre_parada = fp.getInt("prep", -1);   // nivel ANTES de desligar (gravado)
   if (fuel_pct_pre_parada >= 0) fuel_pre_de_boot = true;   // veio da NVS -> aparelho desligou no posto
+  fuel_pct_antes = fp.getInt("pa", -1);          // ultimo abastecimento (persistido)
+  fuel_pct_depois = fp.getInt("pd", -1);
   fp.end();
 }
 static uint8_t fuelConfiancaPct() {
@@ -5675,9 +5679,14 @@ void atualizarCombustivel(const DadosCarro& d) {
   if (d.combust >= 0 && fuel_tanque_l >= 10) snprintf(b,sizeof(b),"Nivel %d%%   ~%.1f L", d.combust, fuel_tanque_l*d.combust/100.0f);
   else if (d.combust >= 0) snprintf(b,sizeof(b),"Nivel %d%%", d.combust); else snprintf(b,sizeof(b),"Nivel --");
   lv_label_set_text(fuelLblNivel,b);
-  if (fuel_abast_pendente) snprintf(b,sizeof(b),"Abastecimento estimado: %.1f L\nInforme no app quanto a bomba marcou", fuel_l_estimado);
-  else if (fuel_l_informado > 0) snprintf(b,sizeof(b),"Bomba: %.1f L   VEICAN: %.1f L", fuel_l_informado, fuel_l_estimado);
-  else snprintf(b,sizeof(b),"Aguardando abastecimento");
+  // ULTIMO ABASTECIMENTO (fica gravado): de X% -> Y% e quantos litros entraram.
+  if (fuel_pct_antes >= 0 && fuel_pct_depois > fuel_pct_antes && fuel_l_estimado > 0.1f) {
+    const char* nota = fuel_abast_pendente ? "  (informe a bomba)" : "";
+    snprintf(b, sizeof(b), "Ultimo abast: %d%% -> %d%%\nEntraram ~%.1f L%s",
+             fuel_pct_antes, fuel_pct_depois, fuel_l_estimado, nota);
+  } else {
+    snprintf(b, sizeof(b), "Nenhum abastecimento ainda");
+  }
   lv_label_set_text(fuelLblUlt,b);
   if (fuel_l_informado > 0) {
     snprintf(b,sizeof(b),"Diferenca: %.1f L  (%.1f%%)", fuel_dif_l<0?-fuel_dif_l:fuel_dif_l, fuel_dif_pct);
@@ -6120,6 +6129,7 @@ String executarComandoApp(String cmd) {
     fuel_tanque_l=tank; strncpy(fuel_veiculo,nome.c_str(),sizeof(fuel_veiculo)-1); fuel_veiculo[sizeof(fuel_veiculo)-1]=0;
     fuel_aprendizado=0; fuel_abast_pendente=false; alerta_combustivel_discrep=false;
     fuel_fator=1.0f; fuel_l_raw=0.0f; fuel_calibrado=false; fuel_gnv=false;   // zera calibracao/GNV (carro novo)
+    fuel_pct_antes=-1; fuel_pct_depois=-1; fuel_l_estimado=0; fuel_l_informado=0;   // zera ultimo abastecimento
     fuelAnaliseSalvar();
     return "OK: veiculo="+nome+" tanque="+String(tank,1)+"L";
   }
