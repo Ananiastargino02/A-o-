@@ -234,6 +234,10 @@ volatile uint8_t pagina_atual = 0;
 volatile uint8_t pagina_anterior = 255;
 volatile bool entrou_pagina = false;  // true no 1o frame apos trocar de pagina (forca redesenho)
 const uint8_t TOTAL_PAGINAS = 8;  // 0 cockpit,1 combustivel,2 diag,3 sistema,4 manut,5 ajuste,6 temas,7 historico
+// U4: carrossel de navegacao (menu p/ pular direto pra qualquer pagina)
+volatile bool     menu_carrossel = false;
+volatile uint8_t  menu_sel = 0;
+volatile uint32_t menu_car_input = 0;
 
 // ===== NOVO: Estados da página de ajuste de hora/data =====
 #define AJUSTE_ESTADO_MENU    0
@@ -5682,6 +5686,51 @@ void atualizarCombustivel(const DadosCarro& d) {
   lv_label_set_text(fuelLblStatus,b);
 }
 
+// ============================================================
+//  U4: CARROSSEL DE NAVEGACAO (menu p/ pular direto pra qualquer pagina)
+//  Overlay por cima da pagina atual. Abre no MENU longo do cockpit.
+//  ANT/PRX movem, OK entra, fecha sozinho apos ~6s sem toque.
+// ============================================================
+static lv_obj_t *gMenuCar = NULL, *menuCarSelBar = NULL;
+static const char* MENU_NOMES[8] = {"Painel", "Combustivel", "Falhas", "Sistema",
+                                    "Manutencao", "Hora / Data", "Temas", "Historico"};
+void montarMenuCarrossel() {
+  lv_obj_t* scr = lv_scr_act();
+  gMenuCar = lv_obj_create(scr);
+  lv_obj_set_size(gMenuCar, LV_W, LV_H);
+  lv_obj_set_pos(gMenuCar, 0, 0);
+  lv_obj_set_style_bg_color(gMenuCar, lv_color_hex(0x05070D), 0);
+  lv_obj_set_style_bg_opa(gMenuCar, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(gMenuCar, 0, 0);
+  lv_obj_set_style_pad_all(gMenuCar, 0, 0);
+  lv_obj_clear_flag(gMenuCar, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_t* tit = lv_label_create(gMenuCar);
+  lv_label_set_text(tit, "IR PARA");
+  lv_obj_set_style_text_font(tit, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(tit, lv_color_hex(0x4DD0E1), 0);
+  lv_obj_align(tit, LV_ALIGN_TOP_MID, 0, 4);
+  menuCarSelBar = lv_obj_create(gMenuCar);
+  lv_obj_set_size(menuCarSelBar, 300, 20);
+  lv_obj_set_style_bg_color(menuCarSelBar, lv_color_hex(0x16263A), 0);
+  lv_obj_set_style_border_color(menuCarSelBar, lv_color_hex(0x00E5FF), 0);
+  lv_obj_set_style_border_width(menuCarSelBar, 2, 0);
+  lv_obj_set_style_radius(menuCarSelBar, 5, 0);
+  lv_obj_clear_flag(menuCarSelBar, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_pos(menuCarSelBar, 10, 40 + menu_sel * 22);
+  for (int i = 0; i < TOTAL_PAGINAS; i++) {
+    lv_obj_t* l = lv_label_create(gMenuCar);
+    lv_label_set_text(l, MENU_NOMES[i]);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(l, lv_color_white(), 0);
+    lv_obj_set_pos(l, 22, 42 + i * 22);
+  }
+  lv_obj_t* hint = lv_label_create(gMenuCar);
+  lv_label_set_text(hint, LV_SYMBOL_LEFT LV_SYMBOL_RIGHT " move    OK entra");
+  lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(hint, lv_color_hex(0x607D8B), 0);
+  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -4);
+}
+
 void construirPagina(uint8_t pag) {
   lv_obj_clean(lv_scr_act());
   lv_obj_set_style_bg_color(lv_scr_act(), lv_color_hex(0x05070D), 0);
@@ -5742,6 +5791,19 @@ void taskTela(void* param) {
     STAGE_TELA("dados");
     DadosCarro d;
     if (xSemaphoreTake(mutex_dados, pdMS_TO_TICKS(50)) == pdTRUE) { d = dados_publicos; xSemaphoreGive(mutex_dados); }
+
+    // U4: carrossel de navegacao (overlay). Enquanto aberto, nao desenha a pagina.
+    if (menu_carrossel) {
+      if (!gMenuCar) montarMenuCarrossel();
+      static int last_ms = -1;
+      if (gMenuCar && menu_sel != last_ms) { lv_obj_set_y(menuCarSelBar, 40 + menu_sel * 22); last_ms = menu_sel; }
+      lv_timer_handler();
+      vTaskDelay(pdMS_TO_TICKS(15));
+      continue;
+    } else if (gMenuCar) {
+      lv_obj_del(gMenuCar); gMenuCar = NULL; menuCarSelBar = NULL;
+      pagina_render = 255;   // forca reconstruir a pagina de destino
+    }
 
     if (pagina_atual != pagina_render) {
       STAGE_TELA("construirPagina");
@@ -6492,11 +6554,32 @@ void taskBotoes(void* param) {
     }
     if (agora_ant == LOW || agora_menu == LOW || agora_prx == LOW || agora_enter == LOW) contando_pra_sleep = false;
 
+    // U4: com o carrossel ABERTO, os botoes controlam SO o menu (nao a pagina).
+    //  ANT/PRX movem, ENTER entra, e fecha sozinho apos ~6s sem toque. MENU nao
+    //  age aqui (o release do MENU-longo que abriu o menu nao pode fecha-lo).
+    if (menu_carrossel) {
+      bool tocou = false;
+      if (t - ultimo_debounce > DEBOUNCE_MS) {
+        if (prev_ant == HIGH && agora_ant == LOW) { menu_sel = (menu_sel == 0) ? (TOTAL_PAGINAS - 1) : (menu_sel - 1); ultimo_debounce = t; tocou = true; }
+        else if (prev_prx == HIGH && agora_prx == LOW) { menu_sel = (menu_sel + 1) % TOTAL_PAGINAS; ultimo_debounce = t; tocou = true; }
+      }
+      if (prev_enter == LOW && agora_enter == HIGH && t - ultimo_enter > DEBOUNCE_MS) {
+        pagina_atual = menu_sel; nav_modo = NAV_MODO_VISUALIZACAO; menu_carrossel = false; ultimo_enter = t; tocou = true;
+      }
+      if (tocou) menu_car_input = t;
+      else if (t - menu_car_input > 6000) menu_carrossel = false;   // fecha sozinho
+      prev_ant = agora_ant; prev_menu = agora_menu; prev_prx = agora_prx; prev_enter = agora_enter;
+      hb_botoes = millis();
+      vTaskDelay(pdMS_TO_TICKS(15));
+      continue;
+    }
+
     if (prev_menu == HIGH && agora_menu == LOW) { menu_pressionado_em = t; menu_longpress_disparado = false; Serial.println("[BTN] MENU pressionado"); }
     if (agora_menu == LOW && !menu_longpress_disparado && t - menu_pressionado_em >= LONGPRESS_MS) {
       menu_longpress_disparado = true;
       if (pagina_atual == 0 && nav_modo == NAV_MODO_VISUALIZACAO) {
-        pagina_atual = 5;
+        // U4: MENU longo no cockpit ABRE o carrossel de navegacao (antes ia pro ajuste)
+        menu_carrossel = true; menu_sel = pagina_atual; menu_car_input = t;
       } else if (pagina_atual == 4 && nav_modo == NAV_MODO_EDICAO && !manut_confirma_reset) {
         manut_confirma_reset = true;
         manut_confirma_selecionado = 1;
