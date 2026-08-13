@@ -6089,11 +6089,16 @@ String executarComandoApp(String cmd) {
   // Auto-sincroniza a HORA pelo celular (o app manda ao conectar). Acaba com a
   // chatice de ajustar dia/mes/ano no botao. Ex.: SETTIME 1765238400
   if (up.startsWith("SETTIME ")) {
-    uint32_t ut = (uint32_t) cmd.substring(8).toInt();
-    if (ut < 1672531200UL || ut > 4102444800UL) return "ERRO: horario invalido";  // 2023..2100
-    rtcAdjust(DateTime(ut));
-    hora_nao_ajustada = false;
-    return "OK: hora sincronizada";
+    // Componentes (sem ambiguidade de epoca): SETTIME AAAA MM DD HH MM SS (hora LOCAL)
+    int Y, Mo, D, H, Mi, S;
+    if (sscanf(cmd.c_str() + 8, "%d %d %d %d %d %d", &Y, &Mo, &D, &H, &Mi, &S) == 6 &&
+        Y >= 2023 && Y <= 2100 && Mo >= 1 && Mo <= 12 && D >= 1 && D <= 31 &&
+        H >= 0 && H <= 23 && Mi >= 0 && Mi <= 59 && S >= 0 && S <= 59) {
+      rtcAdjust(DateTime(Y, Mo, D, H, Mi, S));
+      hora_nao_ajustada = false;
+      return "OK: hora sincronizada";
+    }
+    return "ERRO: use SETTIME AAAA MM DD HH MM SS";
   }
   if (up == "SPEEDHIST") return speedHistString();   // historico de velocidade (gravado no aparelho)
 

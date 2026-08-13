@@ -215,9 +215,20 @@ class BleService extends ChangeNotifier {
     _txSub = _tx!.onValueReceived.listen(_onDados);
 
     _setConn(VConn.conectado);
+    await _syncHora();          // sincroniza a hora do aparelho com a do celular
     await _syncSpeedDevice();
     await _carregarRecordes();
     _startPolling();
+  }
+
+  /// Sincroniza a HORA do aparelho com a do celular (hora LOCAL), em componentes
+  /// (sem ambiguidade de fuso/epoca). Acaba com o ajuste manual no botao.
+  Future<void> _syncHora() async {
+    try {
+      final n = DateTime.now();
+      final cmd = 'SETTIME ${n.year} ${n.month} ${n.day} ${n.hour} ${n.minute} ${n.second}';
+      await enviar(cmd, timeout: const Duration(seconds: 4));
+    } catch (_) {/* nao trava a conexao se falhar */}
   }
 
   /// Caiu a conexao. Se NAO foi o usuario, mantem o painel com o ultimo dado e
